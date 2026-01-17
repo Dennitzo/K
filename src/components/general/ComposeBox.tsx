@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
@@ -9,6 +9,7 @@ import SevenTVPickerButton from '@/components/ui/seventv-picker';
 import { detectMentionsInText, validateAndReturnPublicKey } from '@/utils/kaspaAddressUtils';
 import { getExplorerTransactionUrl } from '@/utils/explorerUtils';
 import { useUserSettings } from '@/contexts/UserSettingsContext';
+import emojiData from '@/data/emoji-data.json';
 
 interface ComposeBoxProps {
   onPost: (content: string) => void;
@@ -23,6 +24,9 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
   const { selectedNetwork, hideTransactionPopup } = useUserSettings();
   const editorRef = useRef<HTMLDivElement>(null);
   const lastContentRef = useRef<string>('');
+  const emojiRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
+  const [emojiQuery, setEmojiQuery] = useState('');
+  const [emojiActiveIndex, setEmojiActiveIndex] = useState(0);
 
   const emoteUrlRegex = /https?:\/\/cdn\.7tv\.app\/emote\/[A-Za-z0-9]+\/\d+x\.(?:webp|png|avif)/g;
 
@@ -54,6 +58,46 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
     return html;
   };
 
+  const emojiIndex = useMemo(() => {
+    const toEmoji = (unicode: string) => {
+      const codePoints = unicode.split('-').map((part) => parseInt(part, 16));
+      return String.fromCodePoint(...codePoints);
+    };
+
+    const pickPrimaryName = (names: string[]) => {
+      if (!names.length) return '';
+      const descriptive = names.find((name) => name.includes(' '));
+      return descriptive || names[0];
+    };
+
+    const categories = Object.values(emojiData) as Array<Array<{ n?: string[]; u?: string }>>;
+    return categories.flatMap((category) =>
+      (category || [])
+        .filter((entry) => entry?.u && Array.isArray(entry.n) && entry.n.length)
+        .map((entry) => {
+          const names = entry.n || [];
+          return {
+            emoji: toEmoji(entry.u as string),
+            names,
+            primaryName: pickPrimaryName(names),
+            search: names.join(' ').toLowerCase()
+          };
+        })
+    );
+  }, []);
+
+  const emojiSuggestions = useMemo(() => {
+    const trimmed = emojiQuery.trim().toLowerCase();
+    if (!trimmed) return [];
+    return emojiIndex
+      .filter((entry) => entry.search.includes(trimmed))
+      .slice(0, 32);
+  }, [emojiIndex, emojiQuery]);
+
+  useEffect(() => {
+    setEmojiActiveIndex(0);
+  }, [emojiQuery]);
+
   const serializeEditorContent = (node: Node): string => {
     if (node.nodeType === Node.TEXT_NODE) {
       return node.textContent || '';
@@ -82,6 +126,60 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
     }
 
     return text;
+  };
+
+  const updateEmojiQueryFromSelection = () => {
+    const editor = editorRef.current;
+    if (!editor) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.endContainer)) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    if (range.endContainer.nodeType !== Node.TEXT_NODE) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const textNode = range.endContainer as Text;
+    const text = textNode.textContent || '';
+    const uptoCursor = text.slice(0, range.endOffset);
+    const match = /(?:^|\s):([\w+-]*)$/.exec(uptoCursor);
+
+    if (!match) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const query = match[1] || '';
+    if (!query) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    setEmojiQuery(query);
+    emojiRangeRef.current = {
+      node: textNode,
+      start: range.endOffset - query.length - 1,
+      end: range.endOffset
+    };
   };
 
   const updateEditorFromContent = (value: string) => {
@@ -134,6 +232,39 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
     }
     lastContentRef.current = nextValue;
     setContent(nextValue);
+  };
+
+  const insertEmojiSuggestion = (emoji: string) => {
+    const editor = editorRef.current;
+    const rangeInfo = emojiRangeRef.current;
+    if (!editor || !rangeInfo) {
+      insertTextAtCursor(`${emoji} `);
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const range = document.createRange();
+    range.setStart(rangeInfo.node, rangeInfo.start);
+    range.setEnd(rangeInfo.node, rangeInfo.end);
+    range.deleteContents();
+
+    const insertion = document.createTextNode(`${emoji} `);
+    range.insertNode(insertion);
+
+    const selection = window.getSelection();
+    if (selection) {
+      const caretRange = document.createRange();
+      caretRange.setStart(insertion, insertion.textContent?.length || 0);
+      caretRange.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(caretRange);
+    }
+
+    updateContentFromEditor();
+    setEmojiQuery('');
+    emojiRangeRef.current = null;
+    editor.focus();
   };
 
   const insertTextAtCursor = (value: string) => {
@@ -276,9 +407,50 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
                   suppressContentEditableWarning
                   role="textbox"
                   aria-multiline="true"
-                  onInput={updateContentFromEditor}
+                  onInput={() => {
+                    updateContentFromEditor();
+                    updateEmojiQueryFromSelection();
+                  }}
+                  onKeyUp={updateEmojiQueryFromSelection}
+                  onClick={updateEmojiQueryFromSelection}
+                  onKeyDown={(event) => {
+                    if (!emojiSuggestions.length) return;
+                    if (event.key === 'ArrowDown') {
+                      event.preventDefault();
+                      setEmojiActiveIndex((prev) => Math.min(prev + 1, emojiSuggestions.length - 1));
+                    } else if (event.key === 'ArrowUp') {
+                      event.preventDefault();
+                      setEmojiActiveIndex((prev) => Math.max(prev - 1, 0));
+                    } else if (event.key === 'Enter' || event.key === 'Tab') {
+                      event.preventDefault();
+                      const pick = emojiSuggestions[emojiActiveIndex];
+                      if (pick) {
+                        insertEmojiSuggestion(pick.emoji);
+                      }
+                    } else if (event.key === 'Escape') {
+                      event.preventDefault();
+                      setEmojiQuery('');
+                      emojiRangeRef.current = null;
+                    }
+                  }}
                   className="flex-1 min-h-10 sm:min-h-12 w-full resize-none text-base border border-input-thin rounded-md bg-transparent px-3 py-2 outline-none focus-visible:border-input-thin-focus"
                 />
+                {emojiSuggestions.length > 0 && (
+                  <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-border bg-background shadow-lg">
+                    {emojiSuggestions.map((entry, index) => (
+                      <button
+                        key={`${entry.emoji}-${entry.primaryName}-${index}`}
+                        type="button"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => insertEmojiSuggestion(entry.emoji)}
+                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted ${index === emojiActiveIndex ? 'bg-muted' : ''}`}
+                      >
+                        <span className="text-base">{entry.emoji}</span>
+                        <span className="text-muted-foreground">:{entry.primaryName}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="flex items-start space-x-1">
                 <EmojiPickerButton onEmojiSelect={handleEmojiSelect} className="mt-1" />
