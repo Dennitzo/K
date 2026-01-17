@@ -5,7 +5,8 @@ import Dialog from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { useKaspaTransactions } from '@/hooks/useKaspaTransactions';
-// import EmojiPickerButton from '@/components/ui/emoji-picker';
+import EmojiPickerButton from '@/components/ui/emoji-picker';
+import SevenTVPickerButton from '@/components/ui/seventv-picker';
 import { fetchPostDetails, convertServerPostToClientPost } from '@/services/postsApi';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { toSvg } from 'jdenticon';
@@ -13,12 +14,20 @@ import { LinkifiedText } from '@/utils/linkUtils';
 import { type Post } from '@/models/types';
 import { useUserSettings } from '@/contexts/UserSettingsContext';
 import { getExplorerTransactionUrl } from '@/utils/explorerUtils';
+import emojiData from '@/data/emoji-data.json';
 
 interface QuoteDialogProps {
   isOpen: boolean;
   onClose: () => void;
   postId: string;
   quotedAuthorPubkey: string;
+}
+
+interface SevenTVEmote {
+  id: string;
+  name: string;
+  previewUrl: string;
+  fullUrl: string;
 }
 
 const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
@@ -35,6 +44,13 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
   const { sendTransaction, networkId } = useKaspaTransactions();
   const { apiBaseUrl, selectedNetwork, hideTransactionPopup } = useUserSettings();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const emojiRangeRef = useRef<{ start: number; end: number } | null>(null);
+  const [emojiQuery, setEmojiQuery] = useState('');
+  const [emojiActiveIndex, setEmojiActiveIndex] = useState(0);
+  const [sevenTvEmotes, setSevenTvEmotes] = useState<SevenTVEmote[]>([]);
+
+  const SEVENTV_EMOTES_STORAGE_KEY = 'seventv-emotes-list-v1';
+  const SEVENTV_ENDPOINT = 'https://7tv.io/v3/emote-sets/01F74BZYAR00069YQS4JB48G14';
 
   // Load the post details when dialog opens
   useEffect(() => {
@@ -59,24 +75,288 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
     }
   }, [isOpen, postId, publicKey, apiBaseUrl, networkId]);
 
-  // Emoji picker functionality (currently hidden, kept for future use)
-  // const handleEmojiSelect = (emoji: string) => {
-  //   const textarea = textareaRef.current;
-  //   if (textarea) {
-  //     const start = textarea.selectionStart;
-  //     const end = textarea.selectionEnd;
-  //     const newContent = content.substring(0, start) + emoji + content.substring(end);
-  //     setContent(newContent);
+  const emojiIndex = useMemo(() => {
+    const toEmoji = (unicode: string) => {
+      const codePoints = unicode.split('-').map((part) => parseInt(part, 16));
+      return String.fromCodePoint(...codePoints);
+    };
 
-  //     // Set cursor position after the emoji
-  //     setTimeout(() => {
-  //       textarea.focus();
-  //       textarea.setSelectionRange(start + emoji.length, start + emoji.length);
-  //     }, 0);
-  //   } else {
-  //     setContent(content + emoji);
-  //   }
-  // };
+    const pickPrimaryName = (names: string[]) => {
+      if (!names.length) return '';
+      const descriptive = names.find((name) => name.includes(' '));
+      return descriptive || names[0];
+    };
+
+    const categories = Object.values(emojiData) as Array<Array<{ n?: string[]; u?: string }>>;
+    return categories.flatMap((category) =>
+      (category || [])
+        .filter((entry) => entry?.u && Array.isArray(entry.n) && entry.n.length)
+        .map((entry) => {
+          const names = entry.n || [];
+          return {
+            emoji: toEmoji(entry.u as string),
+            names,
+            primaryName: pickPrimaryName(names),
+            search: names.join(' ').toLowerCase()
+          };
+        })
+    );
+  }, []);
+
+  const emojiSuggestions = useMemo(() => {
+    const trimmed = emojiQuery.trim().toLowerCase();
+    if (!trimmed) return [];
+    return emojiIndex
+      .filter((entry) => entry.search.includes(trimmed))
+      .slice(0, 32);
+  }, [emojiIndex, emojiQuery]);
+
+  const sevenTvSuggestions = useMemo(() => {
+    const trimmed = emojiQuery.trim().toLowerCase();
+    if (!trimmed) return [];
+    return sevenTvEmotes
+      .filter((emote) => emote.name.toLowerCase().includes(trimmed))
+      .slice(0, 24);
+  }, [emojiQuery, sevenTvEmotes]);
+
+  const combinedSuggestions = useMemo(() => {
+    const combined = [
+      ...emojiSuggestions.map((entry) => ({
+        type: 'emoji' as const,
+        emoji: entry.emoji,
+        label: entry.primaryName
+      })),
+      ...sevenTvSuggestions.map((emote) => ({
+        type: '7tv' as const,
+        emote
+      }))
+    ];
+    return combined.slice(0, 32);
+  }, [emojiSuggestions, sevenTvSuggestions]);
+
+  useEffect(() => {
+    setEmojiActiveIndex(0);
+  }, [emojiQuery]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSevenTvEmotes = async () => {
+      try {
+        let nextEmotes: SevenTVEmote[] = [];
+        const stored = localStorage.getItem(SEVENTV_EMOTES_STORAGE_KEY);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+              nextEmotes = parsed.filter((emote) => emote?.id && emote?.name && emote?.previewUrl);
+            }
+          } catch {
+            localStorage.removeItem(SEVENTV_EMOTES_STORAGE_KEY);
+          }
+        }
+
+        if (!nextEmotes.length) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
+          let payload: any = null;
+
+          try {
+            const response = await fetch(SEVENTV_ENDPOINT, { signal: controller.signal });
+            if (!response.ok) {
+              throw new Error(`7TV request failed (${response.status})`);
+            }
+            payload = await response.json();
+          } finally {
+            clearTimeout(timeoutId);
+          }
+
+          if (!payload) {
+            throw new Error('7TV request timed out.');
+          }
+
+          const emotesList = Array.isArray(payload?.emotes) ? payload.emotes : [];
+
+          const normalizeHostUrl = (hostUrl: string | undefined) => {
+            if (!hostUrl) return '';
+            return hostUrl.startsWith('//') ? `https:${hostUrl}` : hostUrl;
+          };
+
+          const pickFile = (files: Array<{ name?: string; format?: string; width?: number }> | undefined, preferredName: string) => {
+            if (!files || !files.length) return null;
+            const exact = files.find((file) => file?.name === preferredName);
+            if (exact) return exact;
+            const webpFiles = files.filter((file) => file?.format === 'WEBP');
+            if (webpFiles.length) {
+              return webpFiles.sort((a, b) => (a.width || 0) - (b.width || 0))[webpFiles.length - 1];
+            }
+            return files.sort((a, b) => (a.width || 0) - (b.width || 0))[files.length - 1] || null;
+          };
+
+          const buildFileUrl = (hostUrl: string, fileName: string | undefined) => {
+            if (!hostUrl || !fileName) return '';
+            return `${hostUrl}/${fileName}`;
+          };
+
+          nextEmotes = emotesList
+            .map((emote: any) => {
+              const hostUrl = normalizeHostUrl(emote?.data?.host?.url);
+              const files = emote?.data?.host?.files as Array<{ name?: string; format?: string; width?: number }> | undefined;
+              const previewFile = pickFile(files, '2x.webp') || pickFile(files, '2x.png');
+              const fullFile = pickFile(files, '4x.webp') || pickFile(files, '4x.png') || previewFile;
+              const previewUrl = buildFileUrl(hostUrl, previewFile?.name);
+              const fullUrl = buildFileUrl(hostUrl, fullFile?.name) || previewUrl;
+              return {
+                id: emote?.id as string,
+                name: emote?.name as string,
+                previewUrl,
+                fullUrl
+              };
+            })
+            .filter((emote: SevenTVEmote) => emote.id && emote.name && emote.previewUrl);
+
+          if (nextEmotes.length) {
+            localStorage.setItem(SEVENTV_EMOTES_STORAGE_KEY, JSON.stringify(nextEmotes));
+          }
+        }
+
+        if (!cancelled) {
+          setSevenTvEmotes(nextEmotes);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Failed to preload 7TV emotes', error);
+        }
+      }
+    };
+
+    void loadSevenTvEmotes();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const updateEmojiQueryFromSelection = (nextValue?: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const cursor = textarea.selectionStart ?? 0;
+    const value = nextValue ?? content;
+    const uptoCursor = value.slice(0, cursor);
+    const match = /(?:^|\s):([\w+-]*)$/.exec(uptoCursor);
+    if (!match) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const query = match[1] || '';
+    if (!query) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const colonIndex = uptoCursor.lastIndexOf(':');
+    if (colonIndex < 0) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    setEmojiQuery(query);
+    emojiRangeRef.current = {
+      start: colonIndex,
+      end: cursor
+    };
+  };
+
+  const insertEmojiSuggestion = (emoji: string) => {
+    const rangeInfo = emojiRangeRef.current;
+    const textarea = textareaRef.current;
+
+    if (!rangeInfo || !textarea) {
+      setContent((prev) => `${prev}${emoji} `);
+      return;
+    }
+
+    const newValue = content.slice(0, rangeInfo.start) + `${emoji} ` + content.slice(rangeInfo.end);
+    setContent(newValue);
+    setEmojiQuery('');
+    emojiRangeRef.current = null;
+
+    const nextPos = rangeInfo.start + emoji.length + 1;
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextPos, nextPos);
+    });
+  };
+
+  const insertEmoteSuggestion = (emote: SevenTVEmote) => {
+    const rangeInfo = emojiRangeRef.current;
+    const textarea = textareaRef.current;
+    const url = emote.fullUrl || emote.previewUrl;
+
+    if (!rangeInfo || !textarea) {
+      setContent((prev) => `${prev}${url} `);
+      return;
+    }
+
+    const newValue = content.slice(0, rangeInfo.start) + `${url} ` + content.slice(rangeInfo.end);
+    setContent(newValue);
+    setEmojiQuery('');
+    emojiRangeRef.current = null;
+
+    const nextPos = rangeInfo.start + url.length + 1;
+    requestAnimationFrame(() => {
+      textarea.focus();
+      textarea.setSelectionRange(nextPos, nextPos);
+    });
+  };
+
+  const handleEmojiSelect = (emoji: string) => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const newContent = content.substring(0, start) + emoji + content.substring(end);
+      setContent(newContent);
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+
+      setTimeout(() => {
+        textarea.focus();
+        textarea.setSelectionRange(start + emoji.length, start + emoji.length);
+      }, 0);
+    } else {
+      setContent(content + emoji);
+    }
+  };
+
+  const handleSevenTVSelect = (url: string) => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const newContent = content.substring(0, start) + `${url} ` + content.substring(end);
+      setContent(newContent);
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+
+      setTimeout(() => {
+        const nextPos = start + url.length + 1;
+        textarea.focus();
+        textarea.setSelectionRange(nextPos, nextPos);
+      }, 0);
+    } else {
+      setContent(`${content}${url} `);
+    }
+  };
 
   const handlePost = async () => {
     if (content.trim() && privateKey && !isSubmitting) {
@@ -156,11 +436,78 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
                 ref={textareaRef}
                 placeholder="Add your comment..."
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
+                onChange={(e) => {
+                  setContent(e.target.value);
+                  updateEmojiQueryFromSelection(e.target.value);
+                }}
+                onKeyUp={updateEmojiQueryFromSelection}
+                onClick={updateEmojiQueryFromSelection}
+                onKeyDown={(event) => {
+                  if (!combinedSuggestions.length) return;
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setEmojiActiveIndex((prev) => Math.min(prev + 1, combinedSuggestions.length - 1));
+                  } else if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setEmojiActiveIndex((prev) => Math.max(prev - 1, 0));
+                  } else if (event.key === 'Enter' || event.key === 'Tab') {
+                    event.preventDefault();
+                    const pick = combinedSuggestions[emojiActiveIndex];
+                    if (pick?.type === 'emoji') {
+                      insertEmojiSuggestion(pick.emoji);
+                    } else if (pick?.type === '7tv') {
+                      insertEmoteSuggestion(pick.emote);
+                    }
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setEmojiQuery('');
+                    emojiRangeRef.current = null;
+                  }
+                }}
                 className="flex-1 min-h-20 resize-none text-sm sm:text-base border-input-thin focus-visible:border-input-thin-focus focus-visible:ring-0"
               />
+              {combinedSuggestions.length > 0 && (
+                <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-border bg-background shadow-lg">
+                  {combinedSuggestions.map((entry, index) => (
+                    <button
+                      key={entry.type === 'emoji' ? `${entry.emoji}-${entry.label}-${index}` : `7tv-${entry.emote.id}-${index}`}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => {
+                        if (entry.type === 'emoji') {
+                          insertEmojiSuggestion(entry.emoji);
+                        } else {
+                          insertEmoteSuggestion(entry.emote);
+                        }
+                      }}
+                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted ${index === emojiActiveIndex ? 'bg-muted' : ''}`}
+                    >
+                      {entry.type === 'emoji' ? (
+                        <>
+                          <span className="text-base">{entry.emoji}</span>
+                          <span className="text-muted-foreground">:{entry.label}</span>
+                        </>
+                      ) : (
+                        <>
+                          <img
+                            src={entry.emote.previewUrl}
+                            alt={entry.emote.name}
+                            loading="lazy"
+                            className="h-5 w-5 object-contain"
+                            referrerPolicy="no-referrer"
+                          />
+                          <span className="text-muted-foreground">:{entry.emote.name}</span>
+                        </>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-            {/*<EmojiPickerButton onEmojiSelect={handleEmojiSelect} className="mt-1" />*/}
+            <div className="flex items-start space-x-1">
+              <EmojiPickerButton onEmojiSelect={handleEmojiSelect} className="mt-1" />
+              <SevenTVPickerButton onEmoteSelect={handleSevenTVSelect} className="mt-1" />
+            </div>
           </div>
         </div>
 
