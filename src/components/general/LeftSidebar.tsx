@@ -1,4 +1,4 @@
-import { User, Settings, MessageSquare, MessageSquareReply, ScanEye, Users, LogOut, AtSign, Bell, UserRoundPlus } from 'lucide-react';
+import { User, Settings, MessageSquare, MessageSquareReply, ScanEye, Users, LogOut, AtSign, Bell, UserRoundPlus, Bookmark } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -18,7 +18,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ isCollapsed = false, isMobile
   const navigate = useNavigate();
   const location = useLocation();
   const { logout, isAuthenticated, publicKey } = useAuth();
-  const { theme, apiBaseUrl } = useUserSettings();
+  const { theme, apiBaseUrl, turquoiseThemeEnabled, bookmarksEnabled } = useUserSettings();
   const [notificationCount, setNotificationCount] = useState(0);
   const [showLogoutDialog, setShowLogoutDialog] = useState(false);
 
@@ -42,6 +42,7 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ isCollapsed = false, isMobile
   const menuItems = [
     { icon: ScanEye, label: 'Watching', path: '/' },
     { icon: UserRoundPlus, label: 'Following', path: '/following' },
+    ...(bookmarksEnabled ? [{ icon: Bookmark, label: 'Bookmarks', path: '/bookmarks' }] : []),
     { icon: MessageSquare, label: 'My posts', path: '/my-posts' },
     { icon: MessageSquareReply, label: 'My replies', path: '/my-replies' },
     { icon: AtSign, label: 'Mentions', path: '/mentions' },
@@ -82,7 +83,11 @@ const LeftSidebar: React.FC<LeftSidebarProps> = ({ isCollapsed = false, isMobile
       isCollapsed && !isMobile ? 'p-2' : 'p-4'
     } ${isMobile ? 'pt-20' : ''} flex flex-col overflow-hidden`}>
       <div className="mb-4 flex justify-center flex-shrink-0">
-        <KaspaLogo className={`${logoSize} transition-all duration-300`} isDarkTheme={theme === 'dark'} />
+        <KaspaLogo
+          className={`${logoSize} transition-all duration-300`}
+          isDarkTheme={theme === 'dark'}
+          accentColor={turquoiseThemeEnabled ? '#70C7BA' : undefined}
+        />
       </div>
       <nav className="space-y-3 overflow-y-auto flex-1">
         {menuItems.map((item) => (

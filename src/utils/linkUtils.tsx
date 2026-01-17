@@ -1,5 +1,6 @@
 import React from 'react';
 import Linkify from 'linkify-react';
+import { find as findLinks } from 'linkifyjs';
 import { detectMentionsInText, formatPublicKeyForDisplay } from '@/utils/kaspaAddressUtils';
 
 /**
@@ -10,6 +11,7 @@ import { detectMentionsInText, formatPublicKeyForDisplay } from '@/utils/kaspaAd
 export const linkifyText = (text: string, onMentionClick?: (pubkey: string) => void): React.ReactNode[] => {
   // First, handle mentions
   const mentions = detectMentionsInText(text);
+  const emoteUrlRegex = /https?:\/\/cdn\.7tv\.app\/emote\/[A-Za-z0-9]+\/\d+x\.(?:webp|png|avif)/g;
 
   // Create segments with mentions marked
   const segments: Array<{text: string, type: 'text' | 'mention', pubkey?: string}> = [];
@@ -64,24 +66,79 @@ export const linkifyText = (text: string, onMentionClick?: (pubkey: string) => v
         </span>
       );
     } else {
-      // Use linkify-react for URL detection and rendering in text segments
-      result.push(
-        <Linkify
-          key={`text-${nodeIndex++}`}
-          options={{
-            className: 'text-info hover:text-info/80 underline break-all',
-            target: '_blank',
-            rel: 'noopener noreferrer',
-            onClick: (e: React.MouseEvent) => e.stopPropagation(), // Prevent card click when clicking link
-          }}
-        >
-          {segment.text}
-        </Linkify>
-      );
+      const regex = new RegExp(emoteUrlRegex.source, 'g');
+      let lastIndex = 0;
+      let match: RegExpExecArray | null = null;
+      let hasEmotes = false;
+
+      while ((match = regex.exec(segment.text)) !== null) {
+        hasEmotes = true;
+        const start = match.index;
+        const url = match[0];
+        const textChunk = segment.text.slice(lastIndex, start);
+
+        if (textChunk) {
+          result.push(
+            <Linkify
+              key={`text-${nodeIndex++}`}
+              options={{
+                className: 'text-info hover:text-info/80 underline break-all',
+                target: '_blank',
+                rel: 'noopener noreferrer',
+                onClick: (e: React.MouseEvent) => e.stopPropagation(), // Prevent card click when clicking link
+              }}
+            >
+              {textChunk}
+            </Linkify>
+          );
+        }
+
+        result.push(
+          <img
+            key={`emote-${nodeIndex++}`}
+            src={url}
+            alt="7TV emote"
+            className="inline-block h-6 w-6 align-text-bottom"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
+        );
+
+        lastIndex = start + url.length;
+      }
+
+      const tail = segment.text.slice(lastIndex);
+      if (tail || !hasEmotes) {
+        result.push(
+          <Linkify
+            key={`text-${nodeIndex++}`}
+            options={{
+              className: 'text-info hover:text-info/80 underline break-all',
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              onClick: (e: React.MouseEvent) => e.stopPropagation(), // Prevent card click when clicking link
+            }}
+          >
+            {tail || segment.text}
+          </Linkify>
+        );
+      }
     }
   });
 
   return result;
+};
+
+export const extractUrls = (text: string): string[] => {
+  const matches = findLinks(text, 'url');
+  const seen = new Set<string>();
+  return matches
+    .map((match) => match.href)
+    .filter((href) => {
+      if (!href || seen.has(href)) return false;
+      seen.add(href);
+      return true;
+    });
 };
 
 /**

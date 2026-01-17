@@ -29,7 +29,7 @@ interface UtxoData {
 const ProfileView: React.FC = () => {
   const navigate = useNavigate();
   const { privateKey, publicKey, address, unlockSession } = useAuth();
-  const { selectedNetwork, getNetworkRPCId } = useUserSettings();
+  const { selectedNetwork, getNetworkRPCId, hideTransactionPopup } = useUserSettings();
   const { getNetworkAwareAddress } = useKaspaAuth();
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [utxoData, setUtxoData] = useState<UtxoData | null>(null);
@@ -380,21 +380,23 @@ const ProfileView: React.FC = () => {
       }
 
       // Show success toast
-      toast.success('Transaction successful!', {
-        description: (
-          <div className="space-y-2">
-            <div>Successfully sent {amountKAS} KAS to {destinationAddress}</div>
-            <div>Transaction fee: {result.feeKAS} KAS</div>
-            <button
-              onClick={() => window.open(getExplorerTransactionUrl(result.id, selectedNetwork), '_blank')}
-              className="mt-2 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
-            >
-              Open explorer
-            </button>
-          </div>
-        ),
-        duration: 5000
-      });
+      if (!hideTransactionPopup) {
+        toast.success('Transaction successful!', {
+          description: (
+            <div className="space-y-2">
+              <div>Successfully sent {amountKAS} KAS to {destinationAddress}</div>
+              <div>Transaction fee: {result.feeKAS} KAS</div>
+              <button
+                onClick={() => window.open(getExplorerTransactionUrl(result.id, selectedNetwork), '_blank')}
+                className="mt-2 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
+              >
+                Open explorer
+              </button>
+            </div>
+          ),
+          duration: 5000
+        });
+      }
 
       // Clear form and reset sending state
       setIsSending(false);
@@ -465,21 +467,23 @@ const ProfileView: React.FC = () => {
       }
 
       // Show success toast
-      toast.success('Transaction successful!', {
-        description: (
-          <div className="space-y-2">
-            <div>Successfully sent single UTXO to {destinationAddress}</div>
-            <div>Transaction fee: {result.feeKAS} KAS</div>
-            <button
-              onClick={() => window.open(getExplorerTransactionUrl(result.id, selectedNetwork), '_blank')}
-              className="mt-2 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
-            >
-              Open explorer
-            </button>
-          </div>
-        ),
-        duration: 5000
-      });
+      if (!hideTransactionPopup) {
+        toast.success('Transaction successful!', {
+          description: (
+            <div className="space-y-2">
+              <div>Successfully sent single UTXO to {destinationAddress}</div>
+              <div>Transaction fee: {result.feeKAS} KAS</div>
+              <button
+                onClick={() => window.open(getExplorerTransactionUrl(result.id, selectedNetwork), '_blank')}
+                className="mt-2 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
+              >
+                Open explorer
+              </button>
+            </div>
+          ),
+          duration: 5000
+        });
+      }
 
       // Clear form and reset sending state
       setIsSending(false);
@@ -576,7 +580,10 @@ const ProfileView: React.FC = () => {
           >
             <ArrowLeft className="h-5 w-5" />
           </Button>
-          <h1 className="text-lg sm:text-xl font-bold">Profile</h1>
+          <div className="flex items-center gap-2">
+            <User className="h-5 w-5 text-muted-foreground" />
+            <h1 className="text-lg sm:text-xl font-bold">Profile</h1>
+          </div>
         </div>
       </div>
 

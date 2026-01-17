@@ -82,11 +82,17 @@ export default defineConfig(({ mode }) => ({
     port: 5173,
     fs: {
       allow: ['..']
+    },
+    proxy: {
+      '/deepl': {
+        target: 'https://api-free.deepl.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/deepl/, '')
+      }
     }
   },
   optimizeDeps: {
     exclude: ['buffer']
   }
 }))
-
-

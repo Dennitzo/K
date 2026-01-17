@@ -1,7 +1,7 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import { ThumbsUp, ThumbsDown, MessageCircle, MessageSquareQuote } from "lucide-react";
+import { ThumbsUp, ThumbsDown, MessageCircle, MessageSquareQuote, Bookmark } from "lucide-react";
 import { type Post } from "@/models/types";
 import { useNavigate } from "react-router-dom";
 import UserDetailsDialog from "../dialogs/UserDetailsDialog";
@@ -9,11 +9,73 @@ import { useJdenticonAvatar } from "@/hooks/useJdenticonAvatar";
 import { toast } from "sonner";
 import { useAuth } from '@/contexts/AuthContext';
 import { useKaspaTransactions } from '@/hooks/useKaspaTransactions';
-import { LinkifiedText } from '@/utils/linkUtils';
+import { extractUrls, LinkifiedText } from '@/utils/linkUtils';
+import LinkEmbed, { isEmbeddableUrl } from './LinkEmbed';
 import QuoteDialog from "../dialogs/QuoteDialog";
 import SimplifiedPostCard from "./SimplifiedPostCard";
 import { getExplorerTransactionUrl } from '@/utils/explorerUtils';
 import { useUserSettings } from '@/contexts/UserSettingsContext';
+import bookmarksService from '@/services/bookmarksService';
+import { addTranslationLog, translateText } from '@/services/deeplService';
+
+const I18N = {
+  de: {
+    translate_link: "Übersetzen mit DeepL",
+    translating: "Übersetze…",
+    translated: "Übersetzt",
+    translate_error: "Fehler beim Übersetzen"
+  },
+  en: {
+    translate_link: "Translate with DeepL",
+    translating: "Translating…",
+    translated: "Translated",
+    translate_error: "Translation failed"
+  },
+  fr: {
+    translate_link: "Traduire avec DeepL",
+    translating: "Traduction…",
+    translated: "Traduit",
+    translate_error: "Échec de la traduction"
+  },
+  es: {
+    translate_link: "Traducir con DeepL",
+    translating: "Traduciendo…",
+    translated: "Traducido",
+    translate_error: "Error al traducir"
+  },
+  it: {
+    translate_link: "Traduci con DeepL",
+    translating: "Traduzione…",
+    translated: "Tradotto",
+    translate_error: "Errore di traduzione"
+  },
+  nl: {
+    translate_link: "Vertalen met DeepL",
+    translating: "Vertalen…",
+    translated: "Vertaald",
+    translate_error: "Vertaling mislukt"
+  },
+  pl: {
+    translate_link: "Tłumacz z DeepL",
+    translating: "Tłumaczenie…",
+    translated: "Przetłumaczono",
+    translate_error: "Błąd tłumaczenia"
+  }
+};
+
+const localeFromLang = (lang: string) => {
+  const normalized = (lang || "DE").toUpperCase();
+  const map: Record<string, keyof typeof I18N> = {
+    DE: "de",
+    EN: "en",
+    FR: "fr",
+    ES: "es",
+    IT: "it",
+    NL: "nl",
+    PL: "pl"
+  };
+  return map[normalized] || "en";
+};
 
 interface PostCardProps {
   post: Post;
@@ -48,9 +110,20 @@ const PostCard: React.FC<PostCardProps> = ({
   const [showUserDetailsDialog, setShowUserDetailsDialog] = useState(false);
   const [showQuoteDialog, setShowQuoteDialog] = useState(false);
   const [isSubmittingVote, setIsSubmittingVote] = useState(false);
+  const [isBookmarked, setIsBookmarked] = useState(false);
+  const [translationText, setTranslationText] = useState<string | null>(null);
+  const [translationState, setTranslationState] = useState<'idle' | 'translating' | 'translated' | 'error'>('idle');
   const { privateKey } = useAuth();
   const { sendTransaction } = useKaspaTransactions();
-  const { selectedNetwork } = useUserSettings();
+  const {
+    selectedNetwork,
+    deeplApiKey,
+    deeplTargetLang,
+    debugLogEnabled,
+    bookmarksEnabled,
+    hideTransactionPopup,
+    embedLinksEnabled
+  } = useUserSettings();
   
   // Generate dynamic avatar based on pubkey for consistency, but use profile image if available
   const avatarSizePixels = isDetailView ? 48 : 40;
@@ -58,6 +131,25 @@ const PostCard: React.FC<PostCardProps> = ({
   
   // Use profile image if available, otherwise use generated avatar
   const displayAvatar = post.author.avatar || jdenticonAvatar;
+
+  useEffect(() => {
+    const unsubscribe = bookmarksService.subscribe((bookmarks) => {
+      setIsBookmarked(bookmarks.some((entry) => entry.id === post.id));
+    });
+    return unsubscribe;
+  }, [post.id]);
+
+  const translationLabels = useMemo(() => {
+    const locale = localeFromLang(deeplTargetLang);
+    return I18N[locale] || I18N.en;
+  }, [deeplTargetLang]);
+
+  const embedUrls = useMemo(() => {
+    if (!embedLinksEnabled) return [];
+    const emoteUrlRegex = /https?:\/\/cdn\.7tv\.app\/emote\/[A-Za-z0-9]+\/\d+x\.(?:webp|png|avif)/;
+    const urls = extractUrls(post.content || '');
+    return urls.filter((url) => isEmbeddableUrl(url) && !emoteUrlRegex.test(url));
+  }, [post.content, embedLinksEnabled]);
 
   const handleUpVote = async () => {
     if (!privateKey || isSubmittingVote) return;
@@ -76,22 +168,24 @@ const PostCard: React.FC<PostCardProps> = ({
       } as any); // Cast as any to bypass TypeScript for now
 
       if (result) {
-        toast.success("Upvote transaction successful!", {
-          description: (
-            <div className="space-y-2">
-              <div>Transaction ID: {result.id}</div>
-              <div>Fees: {result.feeAmount.toString()} sompi</div>
-              <div>Fees: {result.feeKAS} KAS</div>
-              <button
-                onClick={() => window.open(getExplorerTransactionUrl(result.id, selectedNetwork), '_blank')}
-                className="mt-2 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
-              >
-                Open explorer
-              </button>
-            </div>
-          ),
-          duration: 5000
-        });
+        if (!hideTransactionPopup) {
+          toast.success("Upvote transaction successful!", {
+            description: (
+              <div className="space-y-2">
+                <div>Transaction ID: {result.id}</div>
+                <div>Fees: {result.feeAmount.toString()} sompi</div>
+                <div>Fees: {result.feeKAS} KAS</div>
+                <button
+                  onClick={() => window.open(getExplorerTransactionUrl(result.id, selectedNetwork), '_blank')}
+                  className="mt-2 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
+                >
+                  Open explorer
+                </button>
+              </div>
+            ),
+            duration: 5000
+          });
+        }
         
         // Call the parent handler if provided
         if (onUpVote) {
@@ -126,22 +220,24 @@ const PostCard: React.FC<PostCardProps> = ({
       } as any); // Cast as any to bypass TypeScript for now
 
       if (result) {
-        toast.success("Downvote transaction successful!", {
-          description: (
-            <div className="space-y-2">
-              <div>Transaction ID: {result.id}</div>
-              <div>Fees: {result.feeAmount.toString()} sompi</div>
-              <div>Fees: {result.feeKAS} KAS</div>
-              <button
-                onClick={() => window.open(getExplorerTransactionUrl(result.id, selectedNetwork), '_blank')}
-                className="mt-2 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
-              >
-                Open explorer
-              </button>
-            </div>
-          ),
-          duration: 5000
-        });
+        if (!hideTransactionPopup) {
+          toast.success("Downvote transaction successful!", {
+            description: (
+              <div className="space-y-2">
+                <div>Transaction ID: {result.id}</div>
+                <div>Fees: {result.feeAmount.toString()} sompi</div>
+                <div>Fees: {result.feeKAS} KAS</div>
+                <button
+                  onClick={() => window.open(getExplorerTransactionUrl(result.id, selectedNetwork), '_blank')}
+                  className="mt-2 px-3 py-1.5 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90"
+                >
+                  Open explorer
+                </button>
+              </div>
+            ),
+            duration: 5000
+          });
+        }
         
         // Call the parent handler if provided
         if (onDownVote) {
@@ -185,9 +281,81 @@ const PostCard: React.FC<PostCardProps> = ({
     ? post.content
     : post.content.substring(0, MAX_CHARS) + '.....';
 
+  const formatTranslationText = (translated: string, original: string) => {
+    let formatted = translated.replace(/\r\n/g, '\n');
+    formatted = formatted.replace(/\n/g, '\n\n');
+    formatted = formatted.replace(/([^\n])\s+(?=\d+\/\d+)/g, '$1\n\n');
+
+    const sentenceBreakRegex = /([.!?])\s+/g;
+    formatted = formatted.replace(sentenceBreakRegex, '$1\n\n');
+
+    return formatted;
+  };
+
+  const handleTranslate = async (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!deeplApiKey) {
+      setTranslationState('error');
+      return;
+    }
+    if (translationState === 'translating') return;
+    setTranslationState('translating');
+    addTranslationLog(
+      {
+        ts: new Date().toISOString(),
+        level: 'info',
+        message: 'Translation started',
+        details: `len=${post.content.length}`
+      },
+      debugLogEnabled
+    );
+
+    try {
+      const translated = await translateText({
+        text: post.content,
+        targetLang: deeplTargetLang,
+        apiKey: deeplApiKey
+      });
+      setTranslationText(formatTranslationText(translated, post.content));
+      setTranslationState('translated');
+      addTranslationLog(
+        {
+          ts: new Date().toISOString(),
+          level: 'info',
+          message: 'Translation successful',
+          details: `len=${post.content.length}`
+        },
+        debugLogEnabled
+      );
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      setTranslationState('error');
+      addTranslationLog(
+        {
+          ts: new Date().toISOString(),
+          level: 'error',
+          message: 'Translation failed',
+          details: errMsg
+        },
+        debugLogEnabled
+      );
+    }
+  };
+
+  const handleBookmarkToggle = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isBookmarked) {
+      bookmarksService.removeBookmark(post.id);
+    } else {
+      bookmarksService.addBookmark(post);
+    }
+  };
+
   return (
     <div
-      className={`border-b border-border sm:border-l sm:border-r p-3 sm:p-4 hover:bg-accent hover:bg-opacity-50 cursor-pointer transition-colors duration-200 bg-card`}
+      className={`border-b border-border sm:border-l sm:border-r p-3 sm:p-4 hover:bg-accent hover:bg-opacity-50 cursor-pointer transition-colors duration-200 bg-card max-w-full overflow-hidden`}
       onClick={handleCardClick}
     >
       <div className="flex space-x-2 sm:space-x-3">
@@ -221,6 +389,30 @@ const PostCard: React.FC<PostCardProps> = ({
           <div className={`mt-1 text-foreground ${contentTextSize} break-words whitespace-pre-wrap`}>
             <LinkifiedText onMentionClick={handleMentionClick}>{displayContent}</LinkifiedText>
           </div>
+          {deeplApiKey && (
+            <button
+              type="button"
+              onClick={handleTranslate}
+              disabled={translationState === 'translating'}
+              className="mt-2 text-xs text-info hover:text-info/80 underline disabled:opacity-60"
+            >
+              {translationState === 'translating'
+                ? translationLabels.translating
+                : translationState === 'translated'
+                ? translationLabels.translated
+                : translationState === 'error'
+                ? translationLabels.translate_error
+                : translationLabels.translate_link}
+            </button>
+          )}
+          {translationText && (
+            <div className="mt-2 border-l-2 border-border pl-3 text-sm text-muted-foreground italic whitespace-pre-wrap">
+              {translationText}
+            </div>
+          )}
+          {embedUrls.map((url) => (
+            <LinkEmbed key={url} url={url} />
+          ))}
           {isLongMessage && !isDetailView && (
             <div className="mt-2 p-2 bg-muted border-l-4 border-primary rounded-r">
               <p className="text-sm text-muted-foreground">
@@ -326,6 +518,24 @@ const PostCard: React.FC<PostCardProps> = ({
               </div>
               <span className="text-xs sm:text-sm">{post.downVotes || 0}</span>
             </Button>
+            {bookmarksEnabled && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className={`p-1 sm:p-2 flex-1 flex justify-center min-w-0 ${
+                  isBookmarked ? 'text-info' : 'text-muted-foreground hover:text-info'
+                }`}
+                onClick={handleBookmarkToggle}
+              >
+                <Bookmark
+                  className="h-3 w-3 sm:h-4 sm:w-4 mr-1"
+                  fill={isBookmarked ? 'currentColor' : 'none'}
+                />
+                <span className="text-xs sm:text-sm">
+                  {isBookmarked ? 'Bookmarked' : 'Bookmark'}
+                </span>
+              </Button>
+            )}
           </div>
         </div>
       </div>

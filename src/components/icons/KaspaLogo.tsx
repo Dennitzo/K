@@ -3,10 +3,15 @@ import React from 'react';
 interface KaspaLogoProps {
   className?: string;
   isDarkTheme?: boolean;
+  accentColor?: string;
 }
 
-const KaspaLogo: React.FC<KaspaLogoProps> = ({ className = "h-8 w-8", isDarkTheme = false }) => {
-  const fillColor = isDarkTheme ? "#ffffff" : "#1a1a1a";
+const KaspaLogo: React.FC<KaspaLogoProps> = ({
+  className = "h-8 w-8",
+  isDarkTheme = false,
+  accentColor
+}) => {
+  const fillColor = accentColor || (isDarkTheme ? "#ffffff" : "#1a1a1a");
   
   return (
     <svg

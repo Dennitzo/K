@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Loader2, Search } from 'lucide-react';
+import { ArrowLeft, Loader2, Search, Users } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import UserPostCard from '../general/UserPostCard';
 import { type Post } from '@/models/types';
@@ -305,6 +305,7 @@ const loadMoreUsers = useCallback(async () => {
                 <ArrowLeft className="h-5 w-5" />
               </Button>
               <div className="flex items-center gap-2">
+                <Users className="h-5 w-5 text-muted-foreground" />
                 <h1 className="text-xl font-bold">Users</h1>
                 {isLoadingCount ? (
                   <Loader2 className="h-5 w-5 animate-spin" />

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import PostCard from '../general/PostCard';
 import { type Post } from '@/models/types';
@@ -18,6 +18,50 @@ interface MyPostsProps {
 }
 
 const POLLING_INTERVAL = 5000; // 5 seconds
+const SEVENTV_EMOTES_STORAGE_KEY = 'seventv-emotes-list-v1';
+const SEVENTV_CACHE_NAME = 'seventv-emotes-v1';
+
+const buildSevenTVEmotes = (payload: any) => {
+  const emotesList = Array.isArray(payload?.emotes) ? payload.emotes : [];
+
+  const normalizeHostUrl = (hostUrl: string | undefined) => {
+    if (!hostUrl) return '';
+    return hostUrl.startsWith('//') ? `https:${hostUrl}` : hostUrl;
+  };
+
+  const pickFile = (files: Array<{ name?: string; format?: string; width?: number }> | undefined, preferredName: string) => {
+    if (!files || !files.length) return null;
+    const exact = files.find((file) => file?.name === preferredName);
+    if (exact) return exact;
+    const webpFiles = files.filter((file) => file?.format === 'WEBP');
+    if (webpFiles.length) {
+      return webpFiles.sort((a, b) => (a.width || 0) - (b.width || 0))[webpFiles.length - 1];
+    }
+    return files.sort((a, b) => (a.width || 0) - (b.width || 0))[files.length - 1] || null;
+  };
+
+  const buildFileUrl = (hostUrl: string, fileName: string | undefined) => {
+    if (!hostUrl || !fileName) return '';
+    return `${hostUrl}/${fileName}`;
+  };
+
+  return emotesList
+    .map((emote: any) => {
+      const hostUrl = normalizeHostUrl(emote?.data?.host?.url);
+      const files = emote?.data?.host?.files as Array<{ name?: string; format?: string; width?: number }> | undefined;
+      const previewFile = pickFile(files, '2x.webp') || pickFile(files, '2x.png');
+      const fullFile = pickFile(files, '4x.webp') || pickFile(files, '4x.png') || previewFile;
+      const previewUrl = buildFileUrl(hostUrl, previewFile?.name);
+      const fullUrl = buildFileUrl(hostUrl, fullFile?.name) || previewUrl;
+      return {
+        id: emote?.id as string,
+        name: emote?.name as string,
+        previewUrl,
+        fullUrl
+      };
+    })
+    .filter((emote) => emote.id && emote.name && emote.previewUrl);
+};
 
 const MyPosts: React.FC<MyPostsProps> = ({ posts, onUpVote, onDownVote, onRepost, onPost, onServerPostsUpdate }) => {
   const navigate = useNavigate();
@@ -239,6 +283,56 @@ const loadMorePosts = useCallback(async () => {
     };
   }, [loadMorePosts]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const preloadSevenTVEmotes = async () => {
+      try {
+        const response = await fetch('https://7tv.io/v3/emote-sets/01F74BZYAR00069YQS4JB48G14');
+        if (!response.ok) {
+          throw new Error(`7TV request failed (${response.status})`);
+        }
+        const payload = await response.json();
+        const emotes = buildSevenTVEmotes(payload);
+        if (cancelled) return;
+        localStorage.setItem(SEVENTV_EMOTES_STORAGE_KEY, JSON.stringify(emotes));
+
+        if ('caches' in window) {
+          const cache = await caches.open(SEVENTV_CACHE_NAME);
+          const urls = Array.from(
+            new Set(
+              emotes
+                .flatMap((emote) => [emote.previewUrl, emote.fullUrl])
+                .filter((url) => url)
+            )
+          );
+          const batchSize = 12;
+          for (let i = 0; i < urls.length; i += batchSize) {
+            const batch = urls.slice(i, i + batchSize);
+            await Promise.allSettled(
+              batch.map(async (url) => {
+                const cached = await cache.match(url);
+                if (cached) return;
+                const fetched = await fetch(url, { mode: 'cors' });
+                if (fetched.ok) {
+                  await cache.put(url, fetched);
+                }
+              })
+            );
+          }
+        }
+      } catch (err) {
+        console.error('Failed to preload 7TV emotes:', err);
+      }
+    };
+
+    void preloadSevenTVEmotes();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="flex-1 w-full max-w-3xl mx-auto lg:border-r border-border flex flex-col h-full">
       {/* Header */}
@@ -253,7 +347,10 @@ const loadMorePosts = useCallback(async () => {
             >
               <ArrowLeft className="h-5 w-5" />
             </Button>
-            <h1 className="text-xl font-bold">My posts</h1>
+            <div className="flex items-center gap-2">
+              <MessageSquare className="h-5 w-5 text-muted-foreground" />
+              <h1 className="text-xl font-bold">My posts</h1>
+            </div>
           </div>
           {error && (
             <div className="mt-2 p-2 bg-destructive/10 border border-destructive/20 rounded text-sm text-destructive">

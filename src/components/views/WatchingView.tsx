@@ -1,11 +1,12 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, ScanEye } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import PostCard from '../general/PostCard';
 import { type Post, type PaginationOptions } from '@/models/types';
 import { useAuth } from '@/contexts/AuthContext';
 import { useKaspaPostsApi } from '@/hooks/useKaspaPostsApi';
+import { useUserSettings } from '@/contexts/UserSettingsContext';
 
 interface WatchingProps {
   posts: Post[];
@@ -24,13 +25,28 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
   const [error, setError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const { publicKey } = useAuth();
   const { fetchAndConvertWatchingPosts, selectedNetwork, apiBaseUrl } = useKaspaPostsApi();
+  const { searchbarEnabled, searchbarLoadLimit } = useUserSettings();
+
+  useEffect(() => {
+    if (!searchbarEnabled) {
+      setSearchQuery('');
+    }
+  }, [searchbarEnabled]);
   
   
   
   // Refs
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isLoadingRef = useRef(isLoading);
+  const searchQueryRef = useRef(searchQuery);
+  const searchLoadInFlightRef = useRef(false);
+  const searchLimitRef = useRef<number | null>(null);
+  const searchFetchLockedRef = useRef(false);
+  const searchAbortRef = useRef(false);
+  const pollInFlightRef = useRef(false);
   
   // Use refs to store the latest values to avoid dependency issues
   const onServerPostsUpdateRef = useRef(onServerPostsUpdate);
@@ -49,8 +65,16 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
   nextCursorRef.current = nextCursor;
   hasMoreRef.current = hasMore;
   isLoadingMoreRef.current = isLoadingMore;
+  isLoadingRef.current = isLoading;
+  searchQueryRef.current = searchQuery;
 
-  const loadPosts = useCallback(async (reset: boolean = true) => {
+  useEffect(() => {
+    return () => {
+      searchAbortRef.current = true;
+    };
+  }, []);
+
+  const loadPosts = useCallback(async (reset: boolean = true, pageLimit: number = 10) => {
     try {
       if (reset) {
         setIsLoading(true);
@@ -60,7 +84,7 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
       }
       
       const options: PaginationOptions = {
-        limit: 10,
+        limit: pageLimit,
         ...(reset ? {} : { before: nextCursorRef.current })
       };
       
@@ -96,13 +120,16 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
     }
   }, []); // Remove dependencies to prevent recreation
 
-  const loadMorePosts = useCallback(async () => {
+  const loadMorePosts = useCallback(async (options?: { force?: boolean; pageLimit?: number }) => {
+    if (!options?.force && searchbarEnabled && searchQuery.trim()) {
+      return;
+    }
     if (!hasMoreRef.current || isLoadingMoreRef.current) {
       return;
     }
-    
-    await loadPosts(false);
-  }, [loadPosts]);
+
+    await loadPosts(false, options?.pageLimit);
+  }, [loadPosts, searchbarEnabled, searchQuery]);
 
 // Load posts on component mount and when network or apiBaseUrl changes
   useEffect(() => {
@@ -112,26 +139,23 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
     }
   }, [publicKey, selectedNetwork, apiBaseUrl]);
 
-  // Auto-refresh every 30 seconds (less aggressive to avoid interfering with infinite scroll)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      // Only refresh if user is near the top to avoid disrupting infinite scroll
-      const scrollContainer = scrollContainerRef.current;
-      if (scrollContainer && scrollContainer.scrollTop < 100) {
-        loadPosts(true);
-      }
-    }, 30000);
-
-    return () => clearInterval(interval);
-  }, [loadPosts]);
-
   // Set up polling with stable references
   useEffect(() => {
     let interval: NodeJS.Timeout;
     
     const startPolling = () => {
       interval = setInterval(async () => {
+        if (searchbarEnabled && searchQueryRef.current.trim()) {
+          return;
+        }
+        if (pollInFlightRef.current || isLoadingRef.current || isLoadingMoreRef.current) {
+          return;
+        }
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+          return;
+        }
         try {
+          pollInFlightRef.current = true;
           const options: PaginationOptions = {
             limit: 10
           };
@@ -200,6 +224,8 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
           const errorMessage = err instanceof Error ? err.message : 'Failed to fetch watching posts';
           setError(errorMessage);
           console.error('Error fetching watching posts from server:', err);
+        } finally {
+          pollInFlightRef.current = false;
         }
       }, POLLING_INTERVAL);
     };
@@ -223,6 +249,13 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
       const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
       const shouldLoadMore = distanceFromBottom < 300; // Load when within 300px of bottom
 
+      if (
+        searchbarEnabled &&
+        searchQuery.trim()
+      ) {
+        return;
+      }
+
       if (shouldLoadMore && hasMoreRef.current && !isLoadingMoreRef.current) {
         loadMorePosts();
       }
@@ -235,28 +268,91 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
     };
   }, [loadMorePosts]);
 
+  useEffect(() => {
+    const trimmedQuery = searchQuery.trim();
+    const limit = searchbarLoadLimit;
+
+    if (!searchbarEnabled || !trimmedQuery || !Number.isFinite(limit) || limit <= 0) {
+      return;
+    }
+
+    if (searchFetchLockedRef.current || searchLoadInFlightRef.current) {
+      return;
+    }
+
+    searchLimitRef.current = Math.max(postsRef.current.length, limit);
+
+    const loadForSearch = async () => {
+      searchLoadInFlightRef.current = true;
+      try {
+        while (!searchAbortRef.current) {
+          const currentCount = postsRef.current.length;
+          const targetCount = searchLimitRef.current ?? limit;
+          if (currentCount >= targetCount) {
+            break;
+          }
+          if (!hasMoreRef.current) {
+            break;
+          }
+          if (isLoadingRef.current || isLoadingMoreRef.current) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            continue;
+          }
+          await loadMorePosts({ force: true, pageLimit: 100 });
+          if (postsRef.current.length <= currentCount) {
+            break;
+          }
+        }
+      } finally {
+        searchLoadInFlightRef.current = false;
+        searchFetchLockedRef.current = true;
+      }
+    };
+
+    void loadForSearch();
+
+    return () => {
+    };
+  }, [searchQuery, searchbarEnabled, searchbarLoadLimit, loadMorePosts]);
+
   
 
   return (
     <div className="flex-1 w-full max-w-3xl mx-auto lg:border-r border-border flex flex-col h-full">
       {/* Header */}
-      <div className="sticky top-0 bg-background/80 backdrop-blur-md border-b border-border p-4 z-10">
-        <div className="flex items-center space-x-4">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate(-1)}
-            className="p-2 hover:bg-accent rounded-full"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <h1 className="text-xl font-bold">Watching</h1>
-        </div>
-        {error && (
-          <div className="mt-2 p-2 bg-destructive/10 border border-destructive/20 rounded text-sm text-destructive">
-            Error: {error}
+      <div className="sticky top-0 bg-background/80 backdrop-blur-md border-b border-border z-10">
+        <div className="p-4">
+          <div className="flex items-center space-x-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate(-1)}
+              className="p-2 hover:bg-accent rounded-full"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+            <div className="flex items-center gap-2">
+              <ScanEye className="h-5 w-5 text-muted-foreground" />
+              <h1 className="text-xl font-bold">Watching</h1>
+            </div>
+            {searchbarEnabled && (
+              <div className="ml-auto flex-1 pr-10">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search"
+                  className="file:text-foreground placeholder:text-muted-foreground selection:bg-primary selection:text-primary-foreground dark:bg-input/30 flex h-9 w-full min-w-0 rounded-md border bg-background px-3 py-1 shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive text-sm border-input-thin focus-visible:border-input-thin-focus focus-visible:ring-0"
+                />
+              </div>
+            )}
           </div>
-        )}
+          {error && (
+            <div className="mt-2 p-2 bg-destructive/10 border border-destructive/20 rounded text-sm text-destructive">
+              Error: {error}
+            </div>
+          )}
+        </div>
       </div>
       <div 
         ref={scrollContainerRef}
@@ -277,7 +373,21 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
           </div>
         ) : (
           <>
-            {posts.map((post) => (
+            {(searchQuery.trim()
+              ? posts.filter((post) => {
+                  const haystack = [
+                    post.author.name,
+                    post.author.nickname,
+                    post.author.username,
+                    post.content
+                  ]
+                    .filter(Boolean)
+                    .join(' ')
+                    .toLowerCase();
+                  return haystack.includes(searchQuery.toLowerCase());
+                })
+              : posts
+            ).map((post) => (
               <PostCard
                 key={post.id}
                 post={post}
@@ -291,7 +401,7 @@ const Watching: React.FC<WatchingProps> = ({ posts, onUpVote, onDownVote, onRepo
             
             
             {/* Auto-load more content when scrolling near bottom */}
-            {hasMore && isLoadingMore && (
+            {hasMore && isLoadingMore && !(searchbarEnabled && searchQuery.trim()) && (
               <div className="p-4 text-center">
                 <div className="w-6 h-6 border-2 border-transparent rounded-full animate-loader-circle mx-auto"></div>
                 <p className="text-sm text-muted-foreground mt-2">Loading more posts...</p>

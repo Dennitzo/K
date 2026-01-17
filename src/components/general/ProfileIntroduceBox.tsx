@@ -9,8 +9,10 @@ import { toast } from "sonner";
 import { useAuth } from '@/contexts/AuthContext';
 import { useKaspaTransactions } from '@/hooks/useKaspaTransactions';
 import { useKaspaPostsApi } from '@/hooks/useKaspaPostsApi';
+import { useUserSettings } from '@/contexts/UserSettingsContext';
 import EmojiPickerButton from '@/components/ui/emoji-picker';
 import { Base64 } from 'js-base64';
+import { addTranslationLog } from '@/services/deeplService';
 
 const MAX_CHARACTERS = 100;
 const MAX_NICKNAME_CHARACTERS = 20;
@@ -37,6 +39,7 @@ const ProfileIntroduceBox: React.FC = () => {
   const { privateKey, publicKey } = useAuth();
   const { sendTransaction } = useKaspaTransactions();
   const { fetchUserDetails } = useKaspaPostsApi();
+  const { profileAutoRefreshEnabled, setProfileAutoRefreshEnabled, debugLogEnabled } = useUserSettings();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -334,6 +337,19 @@ const ProfileIntroduceBox: React.FC = () => {
   const charactersRemaining = MAX_CHARACTERS - content.length;
   const nicknameCharactersRemaining = MAX_NICKNAME_CHARACTERS - nickname.length;
   const isOverLimit = charactersRemaining < 0 || nicknameCharactersRemaining < 0;
+  const autoRefreshDescription = 'Auto-refresh your profile for self-hosted indexers. If your profile is older than 7 days, we automatically refresh it to ensure self-hosted indexers can continue displaying it. ⚠️ This sends a transaction automatically.';
+
+  const handleAutoRefreshToggle = (enabled: boolean) => {
+    setProfileAutoRefreshEnabled(enabled);
+    addTranslationLog(
+      {
+        ts: new Date().toISOString(),
+        level: 'info',
+        message: `Profile auto-refresh ${enabled ? 'enabled' : 'disabled'}.`
+      },
+      debugLogEnabled
+    );
+  };
 
   return (
     <Card className="border border-border">
@@ -432,6 +448,21 @@ const ProfileIntroduceBox: React.FC = () => {
                     rows={3}
                   />
                 )}
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-muted-foreground">
+                  Profile auto-refresh
+                </label>
+                <label className="flex items-start gap-2 text-sm text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4"
+                    checked={profileAutoRefreshEnabled}
+                    onChange={(event) => handleAutoRefreshToggle(event.target.checked)}
+                  />
+                  <span>{autoRefreshDescription}</span>
+                </label>
               </div>
 
               {/* Followers, Following, and Blocked Counters */}

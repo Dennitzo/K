@@ -149,6 +149,16 @@ body {
   --overlay: 0 0% 100% / 0.5;
 }
 
+:root[data-accent="turquoise"] {
+  --info: 171 48% 45%;
+  --interactive-hover-bg: 171 48% 93%;
+}
+
+[data-theme="dark"][data-accent="turquoise"] {
+  --info: 171 48% 60%;
+  --interactive-hover-bg: 171 48% 18%;
+}
+
 /* Button semantic color utilities */
 .bg-primary {
   background-color: hsl(var(--primary));

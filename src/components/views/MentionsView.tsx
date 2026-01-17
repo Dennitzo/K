@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, AtSign } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import PostCard from '../general/PostCard';
 import { type Post, type PaginationOptions } from '@/models/types';
@@ -259,7 +259,10 @@ const Mentions: React.FC<MentionsProps> = ({ posts, onUpVote, onDownVote, onRepo
           >
             <ArrowLeft className="h-5 w-5" />
           </Button>
-          <h1 className="text-xl font-bold">Mentions</h1>
+          <div className="flex items-center gap-2">
+            <AtSign className="h-5 w-5 text-muted-foreground" />
+            <h1 className="text-xl font-bold">Mentions</h1>
+          </div>
         </div>
         {error && (
           <div className="mt-2 p-2 bg-destructive/10 border border-destructive/20 rounded text-sm text-destructive">

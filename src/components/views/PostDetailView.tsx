@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, RefreshCw, CornerUpLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,78 @@ interface PostDetailViewProps {
   onRepost: (id: string) => void;
 }
 
+type ReplyTreeNode = Post & {
+  depth: number;
+  children: ReplyTreeNode[];
+};
+
+const buildReplyTree = (replies: Post[], rootPostId: string): ReplyTreeNode[] => {
+  const nodeMap = new Map<string, ReplyTreeNode>();
+  const nodes: ReplyTreeNode[] = replies.map(reply => ({
+    ...reply,
+    depth: 0,
+    children: []
+  }));
+
+  nodes.forEach(node => {
+    nodeMap.set(node.id, node);
+  });
+
+  const roots: ReplyTreeNode[] = [];
+
+  nodes.forEach(node => {
+    const parentId = node.parentPostId;
+    if (!parentId || parentId === rootPostId || !nodeMap.has(parentId)) {
+      roots.push(node);
+      return;
+    }
+
+    const parentNode = nodeMap.get(parentId);
+    if (parentNode) {
+      node.depth = parentNode.depth + 1;
+      parentNode.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  return roots;
+};
+
+const flattenReplyTree = (nodes: ReplyTreeNode[]): ReplyTreeNode[] => {
+  const result: ReplyTreeNode[] = [];
+
+  const traverse = (node: ReplyTreeNode) => {
+    result.push(node);
+    node.children.forEach(child => traverse(child));
+  };
+
+  nodes.forEach(node => traverse(node));
+  return result;
+};
+
+const MAX_NESTED_FETCH_DEPTH = 3;
+
+const getReplyContainerStyle = (depth: number): React.CSSProperties => {
+  if (depth <= 0) {
+    return {
+      width: '100%',
+      marginLeft: 0,
+      marginRight: 0
+    };
+  }
+
+  const reductionPerLevel = 4; // percentage
+  const clampedDepth = Math.min(depth, 5);
+  const widthPercent = Math.max(60, 100 - reductionPerLevel * clampedDepth);
+
+  return {
+    width: `${widthPercent}%`,
+    marginLeft: 'auto',
+    marginRight: 0
+  };
+};
+
 const PostDetailView: React.FC<PostDetailViewProps> = ({ onUpVote, onDownVote, onRepost }) => {
   const { postId } = useParams<{ postId: string }>();
   const navigate = useNavigate();
@@ -27,6 +99,9 @@ const PostDetailView: React.FC<PostDetailViewProps> = ({ onUpVote, onDownVote, o
   const [currentPost, setCurrentPost] = useState<Post | null>(null);
   const [isLoadingPost, setIsLoadingPost] = useState(true);
   const [postError, setPostError] = useState<string | null>(null);
+  const [parentPost, setParentPost] = useState<Post | null>(null);
+  const [isLoadingParent, setIsLoadingParent] = useState(false);
+  const [parentError, setParentError] = useState<string | null>(null);
   
   // Replies state
   const [replies, setReplies] = useState<Post[]>([]);
@@ -35,12 +110,105 @@ const PostDetailView: React.FC<PostDetailViewProps> = ({ onUpVote, onDownVote, o
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [nestedRepliesMap, setNestedRepliesMap] = useState<Record<string, Post[]>>({});
   
   // UI state
   const [replyingToId, setReplyingToId] = useState<string | null>(null);
+  const statePost = (location.state as { post?: Post; fromNotifications?: boolean } | null)?.post ?? null;
+  const isFromNotifications = (location.state as { fromNotifications?: boolean } | null)?.fromNotifications ?? false;
+  // Default: the clicked post becomes the parent; in notifications, show the real parent instead.
+  const effectiveParentPostId = isFromNotifications
+    ? currentPost?.parentPostId ?? statePost?.parentPostId ?? null
+    : null;
+  const showRepliesHeaderAfterParent = Boolean(effectiveParentPostId);
+  const showRepliesHeaderAfterPost = !effectiveParentPostId;
   
   // Refs for infinite scroll
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const parentPostIdRef = useRef<string | null>(null);
+  const nestedRepliesCacheRef = useRef<Record<string, Post[]>>({});
+  const nestedRepliesLoadingRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    nestedRepliesCacheRef.current = {};
+    nestedRepliesLoadingRef.current.clear();
+    setNestedRepliesMap({});
+  }, [postId]);
+
+  const fetchNestedRepliesRecursively = useCallback(async (parentId: string, depth: number = 0) => {
+    if (!publicKey || depth >= MAX_NESTED_FETCH_DEPTH) {
+      return;
+    }
+    if (nestedRepliesCacheRef.current[parentId]) {
+      return;
+    }
+    if (nestedRepliesLoadingRef.current.has(parentId)) {
+      return;
+    }
+
+    nestedRepliesLoadingRef.current.add(parentId);
+
+    try {
+      const response = await fetchAndConvertPostReplies(parentId, publicKey, { limit: 10 });
+      const childReplies = response.posts || [];
+      nestedRepliesCacheRef.current[parentId] = childReplies;
+      setNestedRepliesMap(prev => {
+        const existing = prev[parentId];
+        if (existing && existing.length === childReplies.length && existing.every((child, idx) => child.id === childReplies[idx].id)) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [parentId]: childReplies
+        };
+      });
+      await Promise.all(childReplies.map(child => fetchNestedRepliesRecursively(child.id, depth + 1)));
+    } catch (error) {
+      console.error('Error loading nested replies for post', parentId, error);
+    } finally {
+      nestedRepliesLoadingRef.current.delete(parentId);
+    }
+  }, [fetchAndConvertPostReplies, publicKey]);
+
+  useEffect(() => {
+    if (!publicKey) {
+      return;
+    }
+    replies.forEach(reply => {
+      fetchNestedRepliesRecursively(reply.id, 0);
+    });
+  }, [replies, fetchNestedRepliesRecursively, publicKey]);
+
+  const combinedReplies = useMemo(() => {
+    const collected: Post[] = [];
+    const visited = new Set<string>();
+
+    const traverse = (items: Post[]) => {
+      for (const item of items) {
+        if (visited.has(item.id)) {
+          continue;
+        }
+        visited.add(item.id);
+        collected.push(item);
+        const nested = nestedRepliesMap[item.id];
+        if (nested && nested.length > 0) {
+          traverse(nested);
+        }
+      }
+    };
+
+    traverse(replies);
+    return collected;
+  }, [replies, nestedRepliesMap]);
+
+  const replyTree = useMemo(() => {
+    if (!currentPost) {
+      return [];
+    }
+    return buildReplyTree(combinedReplies, currentPost.id);
+  }, [combinedReplies, currentPost]);
+
+  const flattenedReplyTree = useMemo(() => flattenReplyTree(replyTree), [replyTree]);
 
   // Load the main post details using the new API
   const loadPostDetails = useCallback(async () => {
@@ -145,6 +313,32 @@ const PostDetailView: React.FC<PostDetailViewProps> = ({ onUpVote, onDownVote, o
       loadReplies(true);
     }
   }, [postId, loadPostDetails, loadReplies]);
+
+  useEffect(() => {
+    if (!effectiveParentPostId || !publicKey) {
+      setParentPost(null);
+      setParentError(null);
+      parentPostIdRef.current = null;
+      return;
+    }
+    if (parentPostIdRef.current === effectiveParentPostId) {
+      return;
+    }
+    parentPostIdRef.current = effectiveParentPostId;
+    setIsLoadingParent(true);
+    setParentError(null);
+    fetchAndConvertPostDetails(effectiveParentPostId, publicKey)
+      .then((post) => {
+        setParentPost(post);
+      })
+      .catch((error) => {
+        console.error('Error loading parent post:', error);
+        setParentError(error instanceof Error ? error.message : 'Failed to load parent post');
+      })
+      .finally(() => {
+        setIsLoadingParent(false);
+      });
+  }, [effectiveParentPostId, fetchAndConvertPostDetails, publicKey]);
 
   // Set up polling for the main post details (every 5 seconds)
   useEffect(() => {
@@ -497,11 +691,11 @@ const PostDetailView: React.FC<PostDetailViewProps> = ({ onUpVote, onDownVote, o
           </div>
           
           {/* Parent post navigation button - only show if this is a reply */}
-          {currentPost.parentPostId && (
+          {effectiveParentPostId && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => navigate(`/post/${currentPost.parentPostId}`)}
+              onClick={() => navigate(`/post/${effectiveParentPostId}`)}
               className="p-2 hover:bg-muted rounded-full"
               title="Go to parent post"
             >
@@ -519,26 +713,97 @@ const PostDetailView: React.FC<PostDetailViewProps> = ({ onUpVote, onDownVote, o
           msOverflowStyle: 'none'
         }}
       >
+        {effectiveParentPostId && (
+          <div className="border-b border-border bg-card">
+            <div className="px-4 py-3 bg-neutral border-b border-border flex items-center justify-between">
+              <h3 className="text-base font-semibold text-muted-foreground flex items-center">
+                <div className="w-3 h-3 rounded-full bg-primary/60 mr-2"></div>
+                Parent post
+              </h3>
+            </div>
+            {isLoadingParent ? (
+              <div className="p-4 text-sm text-muted-foreground">Loading original post...</div>
+            ) : parentPost ? (
+              <PostCard
+                post={parentPost}
+                onUpVote={onUpVote}
+                onDownVote={onDownVote}
+                onRepost={onRepost}
+                context="detail"
+              />
+            ) : parentError ? (
+              <div className="p-4 text-sm text-destructive">Error: {parentError}</div>
+            ) : null}
+            {showRepliesHeaderAfterParent && (
+              <div className="px-4 py-3 bg-neutral border-b border-border flex items-center justify-between">
+                <h3 className="text-base font-semibold text-muted-foreground flex items-center">
+                  <div className="w-3 h-3 rounded-full bg-primary/60 mr-2"></div>
+                  Replies
+                </h3>
+                <Button
+                  onClick={() => loadReplies(true)}
+                  variant="ghost"
+                  size="sm"
+                  className="p-1 h-auto text-muted-foreground hover:text-foreground"
+                  disabled={isLoadingReplies}
+                >
+                  <RefreshCw className={`h-4 w-4 ${isLoadingReplies ? 'animate-loader-circle' : ''}`} />
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
         {/* Main Post/Comment - Larger version */}
-        <div className="border-b border-border bg-card">
-          <PostCard
-            post={currentPost}
-            onUpVote={onUpVote}
-            onDownVote={onDownVote}
-            onRepost={onRepost}
-            isDetailView={true}
-            onReply={handleReply}
-            context="detail"
-          />
-          {replyingToId === currentPost.id && (
-            <ComposeReply
-              onReply={handleReplySubmit}
-              onCancel={handleReplyCancel}
-              replyingToUser={currentPost.author.username}
-              postId={currentPost.id}
-              mentionedPubkeys={getMentionedPubkeysForReply(currentPost.id)}
-            />
-          )}
+        <div className={effectiveParentPostId ? 'bg-card' : 'border-b border-border bg-card'}>
+          <div className={effectiveParentPostId ? 'border-b border-border' : undefined}>
+            {!effectiveParentPostId && (
+              <div className="px-4 py-3 bg-neutral border-b border-border flex items-center justify-between">
+                <h3 className="text-base font-semibold text-muted-foreground flex items-center">
+                  <div className="w-3 h-3 rounded-full bg-primary/60 mr-2"></div>
+                  Parent post
+                </h3>
+              </div>
+            )}
+            <div className={effectiveParentPostId ? 'flex justify-end' : undefined}>
+              <div style={effectiveParentPostId ? getReplyContainerStyle(0) : { width: '100%' }}>
+                <PostCard
+                  post={currentPost}
+                  onUpVote={onUpVote}
+                  onDownVote={onDownVote}
+                  onRepost={onRepost}
+                  isDetailView={true}
+                  onReply={handleReply}
+                  context="detail"
+                />
+                {replyingToId === currentPost.id && (
+                  <ComposeReply
+                    onReply={handleReplySubmit}
+                    onCancel={handleReplyCancel}
+                    replyingToUser={currentPost.author.username}
+                    postId={currentPost.id}
+                    mentionedPubkeys={getMentionedPubkeysForReply(currentPost.id)}
+                  />
+                )}
+              </div>
+            </div>
+            {showRepliesHeaderAfterPost && (
+              <div className="px-4 py-3 bg-neutral border-b border-border flex items-center justify-between">
+                <h3 className="text-base font-semibold text-muted-foreground flex items-center">
+                  <div className="w-3 h-3 rounded-full bg-primary/60 mr-2"></div>
+                  Replies
+                </h3>
+                <Button
+                  onClick={() => loadReplies(true)}
+                  variant="ghost"
+                  size="sm"
+                  className="p-1 h-auto text-muted-foreground hover:text-foreground"
+                  disabled={isLoadingReplies}
+                >
+                  <RefreshCw className={`h-4 w-4 ${isLoadingReplies ? 'animate-loader-circle' : ''}`} />
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Replies Section */}
@@ -566,15 +831,15 @@ const PostDetailView: React.FC<PostDetailViewProps> = ({ onUpVote, onDownVote, o
           )}
           
           {/* Replies List */}
-          {replies.length === 0 && !isLoadingReplies ? (
+          {flattenedReplyTree.length === 0 && !isLoadingReplies ? (
             <div className="p-8 text-center text-muted-foreground">
               No replies yet. Be the first to reply!
             </div>
           ) : (
             <>
               {/* Replies Header */}
-              {replies.length > 0 && (
-                <div className="px-4 py-3 bg-neutral border-b border-border flex items-center justify-between">
+              {!showRepliesHeaderAfterParent && !showRepliesHeaderAfterPost && flattenedReplyTree.length > 0 && (
+                <div className="px-4 py-3 bg-neutral border-b border-border flex items-center justify-between w-full">
                   <h3 className="text-base font-semibold text-muted-foreground flex items-center">
                     <div className="w-3 h-3 rounded-full bg-primary/60 mr-2"></div>
                     Replies
@@ -591,26 +856,32 @@ const PostDetailView: React.FC<PostDetailViewProps> = ({ onUpVote, onDownVote, o
                 </div>
               )}
               <div className="space-y-0">
-                {replies.map((reply) => {
+                {flattenedReplyTree.map((reply) => {
+                  const containerStyle = getReplyContainerStyle(reply.depth);
                   return (
-                    <div key={reply.id}>
-                      <PostCard
-                        post={reply}
-                        onUpVote={onUpVote}
-                        onDownVote={onDownVote}
-                        onRepost={onRepost}
-                        onReply={handleReply}
-                        context="detail"
-                      />
-                      {replyingToId === reply.id && (
-                        <ComposeReply
-                          onReply={handleReplySubmit}
-                          onCancel={handleReplyCancel}
-                          replyingToUser={reply.author.username}
-                          postId={reply.id}
-                          mentionedPubkeys={getMentionedPubkeysForReply(reply.id)}
+                    <div
+                      key={reply.id}
+                      className="w-full flex justify-end"
+                    >
+                      <div style={containerStyle}>
+                        <PostCard
+                          post={reply}
+                          onUpVote={onUpVote}
+                          onDownVote={onDownVote}
+                          onRepost={onRepost}
+                          onReply={handleReply}
+                          context="detail"
                         />
-                      )}
+                        {replyingToId === reply.id && (
+                          <ComposeReply
+                            onReply={handleReplySubmit}
+                            onCancel={handleReplyCancel}
+                            replyingToUser={reply.author.username}
+                            postId={reply.id}
+                            mentionedPubkeys={getMentionedPubkeysForReply(reply.id)}
+                          />
+                        )}
+                      </div>
                     </div>
                   );
                 })}
@@ -625,7 +896,7 @@ const PostDetailView: React.FC<PostDetailViewProps> = ({ onUpVote, onDownVote, o
               )}
               
               {/* End of replies indicator */}
-              {!hasMore && replies.length > 0 && (
+              {!hasMore && flattenedReplyTree.length > 0 && (
                 <div className="p-4 text-center text-muted-foreground text-sm">
                   No more replies to load
                 </div>

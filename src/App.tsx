@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { HashRouter, BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { UserSettingsProvider, useUserSettings } from "./contexts/UserSettingsContext";
@@ -12,6 +12,7 @@ import Watching from "./components/views/WatchingView.tsx";
 import Following from "./components/views/FollowingView.tsx";
 import Mentions from "./components/views/MentionsView.tsx";
 import NotificationsView from "./components/views/NotificationsView.tsx";
+import ProfileAutoRefresh from "./components/general/ProfileAutoRefresh";
 import UsersView from "./components/views/UsersView.tsx";
 import SearchUsersView from "./components/views/SearchUsersView.tsx";
 import UsersBlockedView from "./components/views/UsersBlockedView.tsx";
@@ -21,6 +22,7 @@ import PostDetailView from "./components/views/PostDetailView.tsx";
 import UserPostsView from "./components/views/UserPostsView.tsx";
 import ProfileView from "./components/views/ProfileView.tsx";
 import SettingsView from "./components/views/SettingsView.tsx";
+import BookmarksView from "./components/views/BookmarksView.tsx";
 
 import { Toaster } from "@/components/ui/sonner";
 import { type Post } from "@/models/types";
@@ -29,6 +31,8 @@ import { useNetworkValidator } from "./hooks/useNetworkValidator";
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { NavigationBar } from '@capgo/capacitor-navigation-bar';
 import { App as CapacitorApp } from '@capacitor/app';
+import notificationService from "./services/notificationService";
+import bookmarksService from "./services/bookmarksService";
 
 // Use HashRouter for Electron (file:// protocol), BrowserRouter for web
 const isElectron = typeof window !== 'undefined' && window.navigator.userAgent.includes('Electron');
@@ -68,7 +72,9 @@ const BackButtonHandler: React.FC = () => {
 
 const MainApp: React.FC = () => {
   const { isAuthenticated, hasStoredKey } = useAuth();
-  const { theme } = useUserSettings();
+  const { theme, tabTitleEnabled, systemNotificationsEnabled } = useUserSettings();
+  const baseTitleRef = useRef<string>('');
+  const lastNotifiedCountRef = useRef<number>(0);
   const [myPostsData, setMyPostsData] = useState<Post[]>([]); // Only server posts, no local posts
   const [myRepliesData, setMyRepliesData] = useState<Post[]>([]);
   const [watchingData, setWatchingData] = useState<Post[]>([]);
@@ -84,6 +90,42 @@ const MainApp: React.FC = () => {
   useNetworkValidator();
 
   // Update status bar and navigation bar style when theme changes
+  useEffect(() => {
+    if (!baseTitleRef.current) {
+      baseTitleRef.current = document.title || 'K-Social';
+    }
+  }, []);
+
+  useEffect(() => {
+    const baseTitle = baseTitleRef.current || document.title || 'K-Social';
+    const unsubscribe = notificationService.subscribe((count) => {
+      if (tabTitleEnabled) {
+        document.title = count > 0 ? `(${count}) ${baseTitle}` : baseTitle;
+      } else {
+        document.title = baseTitle;
+      }
+
+      if (!systemNotificationsEnabled || count <= 0) {
+        lastNotifiedCountRef.current = count;
+        return;
+      }
+      if (count <= lastNotifiedCountRef.current) {
+        lastNotifiedCountRef.current = count;
+        return;
+      }
+      if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+        lastNotifiedCountRef.current = count;
+        return;
+      }
+      new Notification('K-Social', {
+        body: `New notifications: ${count}`
+      });
+      lastNotifiedCountRef.current = count;
+    });
+
+    return unsubscribe;
+  }, [tabTitleEnabled, systemNotificationsEnabled]);
+
   useEffect(() => {
     const updateBars = async () => {
       try {
@@ -173,6 +215,7 @@ const MainApp: React.FC = () => {
     setWatchingData(prev => updatePostRecursively(prev, postId, upVoteUpdateFn));
     setFollowingData(prev => updatePostRecursively(prev, postId, upVoteUpdateFn));
     setMentionsData(prev => updatePostRecursively(prev, postId, upVoteUpdateFn));
+    bookmarksService.updateBookmarkPost(postId, upVoteUpdateFn);
   };
 
   const handleDownVote = (postId: string) => {
@@ -191,6 +234,7 @@ const MainApp: React.FC = () => {
     setWatchingData(prev => updatePostRecursively(prev, postId, downVoteUpdateFn));
     setFollowingData(prev => updatePostRecursively(prev, postId, downVoteUpdateFn));
     setMentionsData(prev => updatePostRecursively(prev, postId, downVoteUpdateFn));
+    bookmarksService.updateBookmarkPost(postId, downVoteUpdateFn);
   };
 
   const handleRepost = (postId: string) => {
@@ -206,26 +250,32 @@ const MainApp: React.FC = () => {
     setWatchingData(prev => updatePostRecursively(prev, postId, repostUpdateFn));
     setFollowingData(prev => updatePostRecursively(prev, postId, repostUpdateFn));
     setMentionsData(prev => updatePostRecursively(prev, postId, repostUpdateFn));
+    bookmarksService.updateBookmarkPost(postId, repostUpdateFn);
   };
 
   const handleServerPostsUpdate = (serverPosts: Post[]) => {
     setMyPostsData(serverPosts); // My posts are only server posts
+    bookmarksService.syncFromPosts(serverPosts);
   };
 
   const handleMyRepliesPostsUpdate = (serverPosts: Post[]) => {
     setMyRepliesData(serverPosts);
+    bookmarksService.syncFromPosts(serverPosts);
   };
 
   const handleWatchingPostsUpdate = (serverPosts: Post[]) => {
     setWatchingData(serverPosts);
+    bookmarksService.syncFromPosts(serverPosts);
   };
 
   const handleFollowingPostsUpdate = (serverPosts: Post[]) => {
     setFollowingData(serverPosts);
+    bookmarksService.syncFromPosts(serverPosts);
   };
 
   const handleMentionsPostsUpdate = (serverPosts: Post[]) => {
     setMentionsData(serverPosts);
+    bookmarksService.syncFromPosts(serverPosts);
   };
 
   const handleUsersPostsUpdate = (serverPosts: Post[]) => {
@@ -267,6 +317,7 @@ const MainApp: React.FC = () => {
         `}
       </style>
       <SessionTimeoutWarning />
+      <ProfileAutoRefresh />
       <ResponsiveLayout>
         <Routes>
           <Route
@@ -315,6 +366,16 @@ const MainApp: React.FC = () => {
         onDownVote={handleDownVote}
         onRepost={handleRepost}
         onServerPostsUpdate={handleFollowingPostsUpdate}
+      />
+    }
+  />
+  <Route
+    path="/bookmarks"
+    element={
+      <BookmarksView
+        onUpVote={handleUpVote}
+        onDownVote={handleDownVote}
+        onRepost={handleRepost}
       />
     }
   />

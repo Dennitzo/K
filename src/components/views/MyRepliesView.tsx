@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, MessageSquareReply } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import PostCard from '../general/PostCard';
 import { type Post } from '@/models/types';
@@ -242,17 +242,20 @@ const loadMorePosts = useCallback(async () => {
       {/* Header */}
       <div className="sticky top-0 bg-background/80 backdrop-blur-md border-b border-border z-10">
         <div className="p-4">
-          <div className="flex items-center space-x-4">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => navigate(-1)}
-              className="p-2 hover:bg-accent rounded-full"
-            >
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
+        <div className="flex items-center space-x-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate(-1)}
+            className="p-2 hover:bg-accent rounded-full"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <div className="flex items-center gap-2">
+            <MessageSquareReply className="h-5 w-5 text-muted-foreground" />
             <h1 className="text-xl font-bold">My replies</h1>
           </div>
+        </div>
           {error && (
             <div className="mt-2 p-2 bg-destructive/10 border border-destructive/20 rounded text-sm text-destructive">
               Error: {error}

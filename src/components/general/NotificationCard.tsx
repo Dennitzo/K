@@ -123,9 +123,11 @@ const NotificationCard: React.FC<NotificationCardProps> = ({ notification }) => 
 
   const handleNavigateToContent = () => {
     if (notification.contentType === 'vote' && notification.contentId) {
-      navigate(`/post/${notification.contentId}`);
+      navigate(`/post/${notification.contentId}`, { state: { fromNotifications: true } });
+    } else if (notification.contentType === 'reply') {
+      navigate(`/post/${notification.id}`, { state: { fromNotifications: true } });
     } else {
-      navigate(`/post/${notification.id}`);
+      navigate(`/post/${notification.id}`, { state: { fromNotifications: true } });
     }
   };
 

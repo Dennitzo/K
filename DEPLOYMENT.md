@@ -57,6 +57,22 @@ add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept";
 - Remote backend: `https://api.example.com`
 - Custom port: `https://example.com:8080`
 
+## DeepL Proxy (Required for Browser Requests)
+
+DeepL blocks direct browser requests due to CORS. Proxy requests through your web server:
+
+```nginx
+location /deepl/ {
+  proxy_pass https://api-free.deepl.com/;
+  proxy_set_header Host api-free.deepl.com;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+The frontend sends translation requests to `/deepl/v2/translate`.
+
 ## Backend Requirements
 
 Your API backend should:
