@@ -6,11 +6,13 @@ import { Smile } from 'lucide-react';
 interface EmojiPickerButtonProps {
   onEmojiSelect: (emoji: string) => void;
   className?: string;
+  onOpenChange?: (open: boolean) => void;
 }
 
 const EmojiPickerButton: React.FC<EmojiPickerButtonProps> = ({ 
   onEmojiSelect, 
-  className = "" 
+  className = "",
+  onOpenChange
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -36,6 +38,10 @@ const EmojiPickerButton: React.FC<EmojiPickerButtonProps> = ({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    onOpenChange?.(isOpen);
+  }, [isOpen, onOpenChange]);
 
   const handleEmojiClick = (emojiData: any) => {
     onEmojiSelect(emojiData.emoji);

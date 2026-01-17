@@ -48,10 +48,13 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
   const [emojiQuery, setEmojiQuery] = useState('');
   const [emojiActiveIndex, setEmojiActiveIndex] = useState(0);
   const [sevenTvEmotes, setSevenTvEmotes] = useState<SevenTVEmote[]>([]);
+  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
+  const [isSevenTvPickerOpen, setIsSevenTvPickerOpen] = useState(false);
 
   const SEVENTV_EMOTES_STORAGE_KEY = 'seventv-emotes-list-v1';
   const SEVENTV_ENDPOINT = 'https://7tv.io/v3/emote-sets/01F74BZYAR00069YQS4JB48G14';
   const emoteUrlRegex = /https?:\/\/cdn\.7tv\.app\/emote\/[A-Za-z0-9]+\/\d+x\.(?:webp|png|avif)/g;
+  const isPickerOpen = isEmojiPickerOpen || isSevenTvPickerOpen;
 
   const escapeHtml = (value: string) =>
     value
@@ -139,6 +142,13 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
       loadPostDetails();
     }
   }, [isOpen, postId, publicKey, apiBaseUrl, networkId]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setIsEmojiPickerOpen(false);
+      setIsSevenTvPickerOpen(false);
+    }
+  }, [isOpen]);
 
   const emojiIndex = useMemo(() => {
     const toEmoji = (unicode: string) => {
@@ -594,7 +604,12 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
   }, [quotedPost]);
 
   return (
-    <Dialog isOpen={isOpen} onClose={onClose} title="Quote Post">
+    <Dialog
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Quote Post"
+      panelClassName={isPickerOpen ? 'min-h-[70vh] overflow-visible' : undefined}
+    >
       <div className="space-y-4">
         {/* Compose area */}
         <div className="flex-1 min-w-0">
@@ -680,8 +695,16 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
               )}
             </div>
             <div className="flex items-start space-x-1">
-              <EmojiPickerButton onEmojiSelect={handleEmojiSelect} className="mt-1" />
-              <SevenTVPickerButton onEmoteSelect={handleSevenTVSelect} className="mt-1" />
+              <EmojiPickerButton
+                onEmojiSelect={handleEmojiSelect}
+                onOpenChange={setIsEmojiPickerOpen}
+                className="mt-1"
+              />
+              <SevenTVPickerButton
+                onEmoteSelect={handleSevenTVSelect}
+                onOpenChange={setIsSevenTvPickerOpen}
+                className="mt-1"
+              />
             </div>
           </div>
         </div>

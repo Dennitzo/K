@@ -8,9 +8,10 @@ interface DialogProps {
   onClose: () => void;
   children: React.ReactNode;
   title?: string;
+  panelClassName?: string;
 }
 
-export const Dialog: React.FC<DialogProps> = ({ isOpen, onClose, children, title }) => {
+export const Dialog: React.FC<DialogProps> = ({ isOpen, onClose, children, title, panelClassName }) => {
   // Handle backdrop click
   const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) {
@@ -46,7 +47,7 @@ export const Dialog: React.FC<DialogProps> = ({ isOpen, onClose, children, title
       onClick={handleBackdropClick}
     >
       <div
-        className="bg-popover border border-border rounded-xl shadow-lg max-w-md sm:max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto"
+        className={`bg-popover border border-border rounded-xl shadow-lg max-w-md sm:max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto ${panelClassName ?? ''}`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

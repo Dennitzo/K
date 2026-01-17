@@ -5,6 +5,7 @@ import { Sparkles } from 'lucide-react';
 interface SevenTVPickerButtonProps {
   onEmoteSelect: (url: string) => void;
   className?: string;
+  onOpenChange?: (open: boolean) => void;
 }
 
 interface SevenTVEmote {
@@ -20,7 +21,8 @@ const SEVENTV_CACHE_NAME = 'seventv-emotes-v1';
 
 const SevenTVPickerButton: React.FC<SevenTVPickerButtonProps> = ({
   onEmoteSelect,
-  className = ""
+  className = "",
+  onOpenChange
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -52,6 +54,10 @@ const SevenTVPickerButton: React.FC<SevenTVPickerButtonProps> = ({
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [isOpen]);
+
+  useEffect(() => {
+    onOpenChange?.(isOpen);
+  }, [isOpen, onOpenChange]);
 
   useEffect(() => {
     if (!isOpen || emotes.length || isLoading) return;
