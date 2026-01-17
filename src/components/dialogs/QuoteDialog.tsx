@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import Dialog from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
@@ -43,14 +42,80 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
   const { privateKey, publicKey } = useAuth();
   const { sendTransaction, networkId } = useKaspaTransactions();
   const { apiBaseUrl, selectedNetwork, hideTransactionPopup } = useUserSettings();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const emojiRangeRef = useRef<{ start: number; end: number } | null>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const lastContentRef = useRef<string>('');
+  const emojiRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
   const [emojiQuery, setEmojiQuery] = useState('');
   const [emojiActiveIndex, setEmojiActiveIndex] = useState(0);
   const [sevenTvEmotes, setSevenTvEmotes] = useState<SevenTVEmote[]>([]);
 
   const SEVENTV_EMOTES_STORAGE_KEY = 'seventv-emotes-list-v1';
   const SEVENTV_ENDPOINT = 'https://7tv.io/v3/emote-sets/01F74BZYAR00069YQS4JB48G14';
+  const emoteUrlRegex = /https?:\/\/cdn\.7tv\.app\/emote\/[A-Za-z0-9]+\/\d+x\.(?:webp|png|avif)/g;
+
+  const escapeHtml = (value: string) =>
+    value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+
+  const renderContentHtml = (value: string) => {
+    const regex = new RegExp(emoteUrlRegex.source, 'g');
+    let lastIndex = 0;
+    let html = '';
+    let match: RegExpExecArray | null = null;
+
+    while ((match = regex.exec(value)) !== null) {
+      const start = match.index;
+      const url = match[0];
+      const textSegment = value.slice(lastIndex, start);
+      html += escapeHtml(textSegment).replace(/\n/g, '<br/>');
+      html += `<img data-emote-url="${url}" src="${url}" alt="7TV emote" style="height:1.5rem;width:1.5rem;display:inline-block;vertical-align:text-bottom;" />`;
+      lastIndex = start + url.length;
+    }
+
+    const tail = value.slice(lastIndex);
+    html += escapeHtml(tail).replace(/\n/g, '<br/>');
+    return html;
+  };
+
+  const serializeEditorContent = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.textContent || '';
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return '';
+    }
+
+    const element = node as HTMLElement;
+    if (element.tagName === 'IMG') {
+      return element.dataset.emoteUrl || '';
+    }
+
+    if (element.tagName === 'BR') {
+      return '\n';
+    }
+
+    let text = '';
+    element.childNodes.forEach((child) => {
+      text += serializeEditorContent(child);
+    });
+
+    if (element.tagName === 'DIV' || element.tagName === 'P') {
+      return text + '\n';
+    }
+
+    return text;
+  };
+
+  const updateEditorFromContent = (value: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.innerHTML = renderContentHtml(value);
+  };
 
   // Load the post details when dialog opens
   useEffect(() => {
@@ -237,18 +302,60 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
     };
   }, []);
 
-  const updateEmojiQueryFromSelection = (nextValue?: string) => {
-    const textarea = textareaRef.current;
-    if (!textarea) {
+  useEffect(() => {
+    if (!editorRef.current) return;
+    if (content === lastContentRef.current) return;
+    updateEditorFromContent(content);
+    lastContentRef.current = content;
+  }, [content]);
+
+  const updateContentFromEditor = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    let nextValue = '';
+    editor.childNodes.forEach((child) => {
+      nextValue += serializeEditorContent(child);
+    });
+    if (nextValue.endsWith('\n')) {
+      nextValue = nextValue.replace(/\n+$/, '');
+    }
+    lastContentRef.current = nextValue;
+    setContent(nextValue);
+  };
+
+  const updateEmojiQueryFromSelection = () => {
+    const editor = editorRef.current;
+    if (!editor) {
       setEmojiQuery('');
       emojiRangeRef.current = null;
       return;
     }
 
-    const cursor = textarea.selectionStart ?? 0;
-    const value = nextValue ?? content;
-    const uptoCursor = value.slice(0, cursor);
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.endContainer)) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    if (range.endContainer.nodeType !== Node.TEXT_NODE) {
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const textNode = range.endContainer as Text;
+    const text = textNode.textContent || '';
+    const uptoCursor = text.slice(0, range.endOffset);
     const match = /(?:^|\s):([\w+-]*)$/.exec(uptoCursor);
+
     if (!match) {
       setEmojiQuery('');
       emojiRangeRef.current = null;
@@ -262,100 +369,161 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
       return;
     }
 
-    const colonIndex = uptoCursor.lastIndexOf(':');
-    if (colonIndex < 0) {
-      setEmojiQuery('');
-      emojiRangeRef.current = null;
-      return;
-    }
-
     setEmojiQuery(query);
     emojiRangeRef.current = {
-      start: colonIndex,
-      end: cursor
+      node: textNode,
+      start: range.endOffset - query.length - 1,
+      end: range.endOffset
     };
   };
 
   const insertEmojiSuggestion = (emoji: string) => {
     const rangeInfo = emojiRangeRef.current;
-    const textarea = textareaRef.current;
+    const editor = editorRef.current;
 
-    if (!rangeInfo || !textarea) {
-      setContent((prev) => `${prev}${emoji} `);
+    if (!rangeInfo || !editor) {
+      insertTextAtCursor(`${emoji} `);
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
       return;
     }
 
-    const newValue = content.slice(0, rangeInfo.start) + `${emoji} ` + content.slice(rangeInfo.end);
-    setContent(newValue);
+    const range = document.createRange();
+    range.setStart(rangeInfo.node, rangeInfo.start);
+    range.setEnd(rangeInfo.node, rangeInfo.end);
+    range.deleteContents();
+
+    const insertion = document.createTextNode(`${emoji} `);
+    range.insertNode(insertion);
+
+    const selection = window.getSelection();
+    if (selection) {
+      const caretRange = document.createRange();
+      caretRange.setStart(insertion, insertion.textContent?.length || 0);
+      caretRange.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(caretRange);
+    }
+
+    updateContentFromEditor();
     setEmojiQuery('');
     emojiRangeRef.current = null;
-
-    const nextPos = rangeInfo.start + emoji.length + 1;
-    requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(nextPos, nextPos);
-    });
+    editor.focus();
   };
 
   const insertEmoteSuggestion = (emote: SevenTVEmote) => {
     const rangeInfo = emojiRangeRef.current;
-    const textarea = textareaRef.current;
     const url = emote.fullUrl || emote.previewUrl;
 
-    if (!rangeInfo || !textarea) {
-      setContent((prev) => `${prev}${url} `);
+    const editor = editorRef.current;
+    if (!rangeInfo || !editor) {
+      insertEmoteAtCursor(url);
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
       return;
     }
 
-    const newValue = content.slice(0, rangeInfo.start) + `${url} ` + content.slice(rangeInfo.end);
-    setContent(newValue);
+    const range = document.createRange();
+    range.setStart(rangeInfo.node, rangeInfo.start);
+    range.setEnd(rangeInfo.node, rangeInfo.end);
+    range.deleteContents();
+
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = emote.name;
+    img.dataset.emoteUrl = url;
+    img.style.height = '1.5rem';
+    img.style.width = '1.5rem';
+    img.style.display = 'inline-block';
+    img.style.verticalAlign = 'text-bottom';
+
+    const spacer = document.createTextNode(' ');
+    const fragment = document.createDocumentFragment();
+    fragment.append(img, spacer);
+    range.insertNode(fragment);
+
+    const selection = window.getSelection();
+    if (selection) {
+      const caretRange = document.createRange();
+      caretRange.setStartAfter(spacer);
+      caretRange.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(caretRange);
+    }
+
+    updateContentFromEditor();
     setEmojiQuery('');
     emojiRangeRef.current = null;
+    editor.focus();
+  };
 
-    const nextPos = rangeInfo.start + url.length + 1;
-    requestAnimationFrame(() => {
-      textarea.focus();
-      textarea.setSelectionRange(nextPos, nextPos);
-    });
+  const insertTextAtCursor = (value: string) => {
+    const editor = editorRef.current;
+    if (!editor) {
+      setContent((prev) => prev + value);
+      return;
+    }
+    const selection = window.getSelection();
+    const hasValidRange = selection && selection.rangeCount && editor.contains(selection.anchorNode);
+    if (!hasValidRange) {
+      editor.appendChild(document.createTextNode(value));
+    } else {
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      range.insertNode(document.createTextNode(value));
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    updateContentFromEditor();
+    editor.focus();
+  };
+
+  const insertEmoteAtCursor = (url: string) => {
+    const editor = editorRef.current;
+    if (!editor) {
+      setContent((prev) => `${prev}${url} `);
+      return;
+    }
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = '7TV emote';
+    img.dataset.emoteUrl = url;
+    img.style.height = '1.5rem';
+    img.style.width = '1.5rem';
+    img.style.display = 'inline-block';
+    img.style.verticalAlign = 'text-bottom';
+
+    const spacer = document.createTextNode(' ');
+    const selection = window.getSelection();
+    const hasValidRange = selection && selection.rangeCount && editor.contains(selection.anchorNode);
+    if (!hasValidRange) {
+      editor.appendChild(img);
+      editor.appendChild(spacer);
+    } else {
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      range.insertNode(spacer);
+      range.insertNode(img);
+      range.setStartAfter(spacer);
+      range.setEndAfter(spacer);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    updateContentFromEditor();
+    editor.focus();
   };
 
   const handleEmojiSelect = (emoji: string) => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-      const newContent = content.substring(0, start) + emoji + content.substring(end);
-      setContent(newContent);
-      setEmojiQuery('');
-      emojiRangeRef.current = null;
-
-      setTimeout(() => {
-        textarea.focus();
-        textarea.setSelectionRange(start + emoji.length, start + emoji.length);
-      }, 0);
-    } else {
-      setContent(content + emoji);
-    }
+    insertTextAtCursor(emoji);
+    setEmojiQuery('');
+    emojiRangeRef.current = null;
   };
 
   const handleSevenTVSelect = (url: string) => {
-    const textarea = textareaRef.current;
-    if (textarea) {
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-      const newContent = content.substring(0, start) + `${url} ` + content.substring(end);
-      setContent(newContent);
-      setEmojiQuery('');
-      emojiRangeRef.current = null;
-
-      setTimeout(() => {
-        const nextPos = start + url.length + 1;
-        textarea.focus();
-        textarea.setSelectionRange(nextPos, nextPos);
-      }, 0);
-    } else {
-      setContent(`${content}${url} `);
-    }
+    insertEmoteAtCursor(url);
+    setEmojiQuery('');
+    emojiRangeRef.current = null;
   };
 
   const handlePost = async () => {
@@ -432,13 +600,20 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
         <div className="flex-1 min-w-0">
           <div className="flex items-start space-x-2">
             <div className="flex-1 relative">
-              <Textarea
-                ref={textareaRef}
-                placeholder="Add your comment..."
-                value={content}
-                onChange={(e) => {
-                  setContent(e.target.value);
-                  updateEmojiQueryFromSelection(e.target.value);
+              {content.length === 0 && (
+                <div className="pointer-events-none absolute left-3 top-2 text-muted-foreground text-sm sm:text-base">
+                  Add your comment...
+                </div>
+              )}
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                role="textbox"
+                aria-multiline="true"
+                onInput={() => {
+                  updateContentFromEditor();
+                  updateEmojiQueryFromSelection();
                 }}
                 onKeyUp={updateEmojiQueryFromSelection}
                 onClick={updateEmojiQueryFromSelection}
@@ -464,7 +639,7 @@ const QuoteDialog: React.FC<QuoteDialogProps> = React.memo(({
                     emojiRangeRef.current = null;
                   }
                 }}
-                className="flex-1 min-h-20 resize-none text-sm sm:text-base border-input-thin focus-visible:border-input-thin-focus focus-visible:ring-0"
+                className="flex-1 min-h-20 w-full resize-none text-sm sm:text-base border border-input-thin rounded-md bg-transparent px-3 py-2 outline-none focus-visible:border-input-thin-focus focus-visible:ring-0"
               />
               {combinedSuggestions.length > 0 && (
                 <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-border bg-background shadow-lg">
