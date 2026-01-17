@@ -15,6 +15,13 @@ interface ComposeBoxProps {
   onPost: (content: string) => void;
 }
 
+interface SevenTVEmote {
+  id: string;
+  name: string;
+  previewUrl: string;
+  fullUrl: string;
+}
+
 const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
   const [content, setContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -27,6 +34,10 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
   const emojiRangeRef = useRef<{ node: Text; start: number; end: number } | null>(null);
   const [emojiQuery, setEmojiQuery] = useState('');
   const [emojiActiveIndex, setEmojiActiveIndex] = useState(0);
+  const [sevenTvEmotes, setSevenTvEmotes] = useState<SevenTVEmote[]>([]);
+
+  const SEVENTV_EMOTES_STORAGE_KEY = 'seventv-emotes-list-v1';
+  const SEVENTV_ENDPOINT = 'https://7tv.io/v3/emote-sets/01F74BZYAR00069YQS4JB48G14';
 
   const emoteUrlRegex = /https?:\/\/cdn\.7tv\.app\/emote\/[A-Za-z0-9]+\/\d+x\.(?:webp|png|avif)/g;
 
@@ -94,9 +105,131 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
       .slice(0, 32);
   }, [emojiIndex, emojiQuery]);
 
+  const sevenTvSuggestions = useMemo(() => {
+    const trimmed = emojiQuery.trim().toLowerCase();
+    if (!trimmed) return [];
+    return sevenTvEmotes
+      .filter((emote) => emote.name.toLowerCase().includes(trimmed))
+      .slice(0, 24);
+  }, [emojiQuery, sevenTvEmotes]);
+
+  const combinedSuggestions = useMemo(() => {
+    const combined = [
+      ...emojiSuggestions.map((entry) => ({
+        type: 'emoji' as const,
+        emoji: entry.emoji,
+        label: entry.primaryName
+      })),
+      ...sevenTvSuggestions.map((emote) => ({
+        type: '7tv' as const,
+        emote
+      }))
+    ];
+    return combined.slice(0, 32);
+  }, [emojiSuggestions, sevenTvSuggestions]);
+
   useEffect(() => {
     setEmojiActiveIndex(0);
   }, [emojiQuery]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadSevenTvEmotes = async () => {
+      try {
+        let nextEmotes: SevenTVEmote[] = [];
+        const stored = localStorage.getItem(SEVENTV_EMOTES_STORAGE_KEY);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+              nextEmotes = parsed.filter((emote) => emote?.id && emote?.name && emote?.previewUrl);
+            }
+          } catch {
+            localStorage.removeItem(SEVENTV_EMOTES_STORAGE_KEY);
+          }
+        }
+
+        if (!nextEmotes.length) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
+          let payload: any = null;
+
+          try {
+            const response = await fetch(SEVENTV_ENDPOINT, { signal: controller.signal });
+            if (!response.ok) {
+              throw new Error(`7TV request failed (${response.status})`);
+            }
+            payload = await response.json();
+          } finally {
+            clearTimeout(timeoutId);
+          }
+
+          if (!payload) {
+            throw new Error('7TV request timed out.');
+          }
+
+          const emotesList = Array.isArray(payload?.emotes) ? payload.emotes : [];
+
+          const normalizeHostUrl = (hostUrl: string | undefined) => {
+            if (!hostUrl) return '';
+            return hostUrl.startsWith('//') ? `https:${hostUrl}` : hostUrl;
+          };
+
+          const pickFile = (files: Array<{ name?: string; format?: string; width?: number }> | undefined, preferredName: string) => {
+            if (!files || !files.length) return null;
+            const exact = files.find((file) => file?.name === preferredName);
+            if (exact) return exact;
+            const webpFiles = files.filter((file) => file?.format === 'WEBP');
+            if (webpFiles.length) {
+              return webpFiles.sort((a, b) => (a.width || 0) - (b.width || 0))[webpFiles.length - 1];
+            }
+            return files.sort((a, b) => (a.width || 0) - (b.width || 0))[files.length - 1] || null;
+          };
+
+          const buildFileUrl = (hostUrl: string, fileName: string | undefined) => {
+            if (!hostUrl || !fileName) return '';
+            return `${hostUrl}/${fileName}`;
+          };
+
+          nextEmotes = emotesList
+            .map((emote: any) => {
+              const hostUrl = normalizeHostUrl(emote?.data?.host?.url);
+              const files = emote?.data?.host?.files as Array<{ name?: string; format?: string; width?: number }> | undefined;
+              const previewFile = pickFile(files, '2x.webp') || pickFile(files, '2x.png');
+              const fullFile = pickFile(files, '4x.webp') || pickFile(files, '4x.png') || previewFile;
+              const previewUrl = buildFileUrl(hostUrl, previewFile?.name);
+              const fullUrl = buildFileUrl(hostUrl, fullFile?.name) || previewUrl;
+              return {
+                id: emote?.id as string,
+                name: emote?.name as string,
+                previewUrl,
+                fullUrl
+              };
+            })
+            .filter((emote: SevenTVEmote) => emote.id && emote.name && emote.previewUrl);
+
+          if (nextEmotes.length) {
+            localStorage.setItem(SEVENTV_EMOTES_STORAGE_KEY, JSON.stringify(nextEmotes));
+          }
+        }
+
+        if (!cancelled) {
+          setSevenTvEmotes(nextEmotes);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('Failed to preload 7TV emotes', error);
+        }
+      }
+    };
+
+    void loadSevenTvEmotes();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const serializeEditorContent = (node: Node): string => {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -267,6 +400,52 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
     editor.focus();
   };
 
+  const insertEmoteSuggestion = (emote: SevenTVEmote) => {
+    const editor = editorRef.current;
+    const rangeInfo = emojiRangeRef.current;
+    const url = emote.fullUrl || emote.previewUrl;
+
+    if (!editor || !rangeInfo) {
+      insertEmoteAtCursor(url);
+      setEmojiQuery('');
+      emojiRangeRef.current = null;
+      return;
+    }
+
+    const range = document.createRange();
+    range.setStart(rangeInfo.node, rangeInfo.start);
+    range.setEnd(rangeInfo.node, rangeInfo.end);
+    range.deleteContents();
+
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = emote.name;
+    img.dataset.emoteUrl = url;
+    img.style.height = '1.5rem';
+    img.style.width = '1.5rem';
+    img.style.display = 'inline-block';
+    img.style.verticalAlign = 'text-bottom';
+
+    const spacer = document.createTextNode(' ');
+    const fragment = document.createDocumentFragment();
+    fragment.append(img, spacer);
+    range.insertNode(fragment);
+
+    const selection = window.getSelection();
+    if (selection) {
+      const caretRange = document.createRange();
+      caretRange.setStartAfter(spacer);
+      caretRange.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(caretRange);
+    }
+
+    updateContentFromEditor();
+    setEmojiQuery('');
+    emojiRangeRef.current = null;
+    editor.focus();
+  };
+
   const insertTextAtCursor = (value: string) => {
     const editor = editorRef.current;
     if (!editor) {
@@ -414,18 +593,20 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
                   onKeyUp={updateEmojiQueryFromSelection}
                   onClick={updateEmojiQueryFromSelection}
                   onKeyDown={(event) => {
-                    if (!emojiSuggestions.length) return;
+                    if (!combinedSuggestions.length) return;
                     if (event.key === 'ArrowDown') {
                       event.preventDefault();
-                      setEmojiActiveIndex((prev) => Math.min(prev + 1, emojiSuggestions.length - 1));
+                      setEmojiActiveIndex((prev) => Math.min(prev + 1, combinedSuggestions.length - 1));
                     } else if (event.key === 'ArrowUp') {
                       event.preventDefault();
                       setEmojiActiveIndex((prev) => Math.max(prev - 1, 0));
                     } else if (event.key === 'Enter' || event.key === 'Tab') {
                       event.preventDefault();
-                      const pick = emojiSuggestions[emojiActiveIndex];
-                      if (pick) {
+                      const pick = combinedSuggestions[emojiActiveIndex];
+                      if (pick?.type === 'emoji') {
                         insertEmojiSuggestion(pick.emoji);
+                      } else if (pick?.type === '7tv') {
+                        insertEmoteSuggestion(pick.emote);
                       }
                     } else if (event.key === 'Escape') {
                       event.preventDefault();
@@ -435,18 +616,39 @@ const ComposeBox: React.FC<ComposeBoxProps> = ({ onPost }) => {
                   }}
                   className="flex-1 min-h-10 sm:min-h-12 w-full resize-none text-base border border-input-thin rounded-md bg-transparent px-3 py-2 outline-none focus-visible:border-input-thin-focus"
                 />
-                {emojiSuggestions.length > 0 && (
+                {combinedSuggestions.length > 0 && (
                   <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-border bg-background shadow-lg">
-                    {emojiSuggestions.map((entry, index) => (
+                    {combinedSuggestions.map((entry, index) => (
                       <button
-                        key={`${entry.emoji}-${entry.primaryName}-${index}`}
+                        key={entry.type === 'emoji' ? `${entry.emoji}-${entry.label}-${index}` : `7tv-${entry.emote.id}-${index}`}
                         type="button"
                         onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => insertEmojiSuggestion(entry.emoji)}
+                        onClick={() => {
+                          if (entry.type === 'emoji') {
+                            insertEmojiSuggestion(entry.emoji);
+                          } else {
+                            insertEmoteSuggestion(entry.emote);
+                          }
+                        }}
                         className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted ${index === emojiActiveIndex ? 'bg-muted' : ''}`}
                       >
-                        <span className="text-base">{entry.emoji}</span>
-                        <span className="text-muted-foreground">:{entry.primaryName}</span>
+                        {entry.type === 'emoji' ? (
+                          <>
+                            <span className="text-base">{entry.emoji}</span>
+                            <span className="text-muted-foreground">:{entry.label}</span>
+                          </>
+                        ) : (
+                          <>
+                            <img
+                              src={entry.emote.previewUrl}
+                              alt={entry.emote.name}
+                              loading="lazy"
+                              className="h-5 w-5 object-contain"
+                              referrerPolicy="no-referrer"
+                            />
+                            <span className="text-muted-foreground">:{entry.emote.name}</span>
+                          </>
+                        )}
                       </button>
                     ))}
                   </div>
